@@ -4,8 +4,18 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from alembic.config import Config
 from alembic import command
+import httpx
+
+# Set dummy OAuth environment values for tests per Amendment 9
+os.environ["ENVIRONMENT"] = "test"
+os.environ["GOOGLE_CLIENT_ID"] = "dummy_test_google_client_id"
+os.environ["GOOGLE_CLIENT_SECRET"] = "dummy_test_google_client_secret"
+os.environ["GITHUB_CLIENT_ID"] = "dummy_test_github_client_id"
+os.environ["GITHUB_CLIENT_SECRET"] = "dummy_test_github_client_secret"
+os.environ["SESSION_SECRET"] = "dummy_test_session_secret_32_bytes_long_ok"
 
 from app.core.config import settings
+from app.main import app
 
 # Test database settings
 TEST_DB_NAME = "linksphere_test"
@@ -44,8 +54,6 @@ def setup_test_database():
     command.upgrade(alembic_cfg, "head")
 
     yield
-
-    # Clean up test engine connections if needed
 
 
 @pytest.fixture(scope="session")
@@ -89,3 +97,18 @@ def alembic_test_cfg():
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     return cfg
+
+
+@pytest.fixture
+async def async_client(db):
+    """Async client connected to the FastAPI app using the test database."""
+    from app.core.db import get_db
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:5173") as client:
+        yield client
+    app.dependency_overrides.clear()

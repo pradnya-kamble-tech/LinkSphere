@@ -8,6 +8,7 @@ router = APIRouter()
 
 @router.get("/health")
 def health_check(db: Session = Depends(get_db)):
+    """Health check endpoint testing real database connectivity."""
     try:
         db.execute(text("SELECT 1"))
         return {

@@ -10,6 +10,7 @@
   --status-loading: #0d6efd;
   --button-bg: #0d6efd;
   --button-text: #ffffff;
+  --button-secondary-bg: #6c757d;
 }
 
 * {
@@ -36,9 +37,26 @@ h1 {
   margin-bottom: 0.5rem;
 }
 
+h2 {
+  font-size: 1.25rem;
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+h3 {
+  font-size: 1rem;
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
 p {
   margin-top: 0;
   margin-bottom: 1rem;
+}
+
+a {
+  color: var(--button-bg);
+  text-decoration: underline;
 }
 
 .card {
@@ -47,6 +65,12 @@ p {
   border-radius: 4px;
   padding: 1.25rem;
   margin-bottom: 1rem;
+}
+
+.alert-error {
+  border-left: 4px solid var(--status-error);
+  color: var(--status-error);
+  background-color: #fff5f5;
 }
 
 .status-badge {
@@ -69,29 +93,49 @@ p {
   color: var(--status-error);
 }
 
-pre {
-  background-color: #e9ecef;
-  padding: 0.75rem;
-  border-radius: 4px;
-  overflow-x: auto;
-  font-size: 0.875rem;
-}
-
-button {
-  background-color: var(--button-bg);
-  color: var(--button-text);
-  border: none;
+.btn {
+  display: inline-block;
   padding: 0.5rem 1rem;
   border-radius: 4px;
-  cursor: pointer;
   font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
+  text-align: center;
 }
 
-button:hover {
-  opacity: 0.9;
+.btn-primary {
+  background-color: var(--button-bg);
+  color: #ffffff;
 }
 
-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.btn-secondary {
+  background-color: var(--button-secondary-bg);
+  color: #ffffff;
+}
+
+.btn-outline {
+  background-color: transparent;
+  border-color: var(--border-color);
+  color: var(--text-color);
+}
+
+.btn-oauth {
+  background-color: #ffffff;
+  color: #212529;
+  border: 1px solid var(--border-color);
+  font-size: 0.95rem;
+  padding: 0.65rem 1rem;
+}
+
+.btn-oauth:hover {
+  background-color: #f1f3f5;
+}
+
+code {
+  background-color: #e9ecef;
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.875rem;
 }

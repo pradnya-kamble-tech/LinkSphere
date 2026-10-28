@@ -1,9 +1,14 @@
+import os
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 from app.core.config import settings
 from app.core.db import Base
+import app.users.models  # noqa: F401
+import app.auth.models  # noqa: F401
+import app.links.models  # noqa: F401
+import app.analytics.models  # noqa: F401
 
 config = context.config
 
@@ -13,8 +18,15 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def get_url() -> str:
+    url = config.get_main_option("sqlalchemy.url")
+    if not url:
+        url = os.getenv("ALEMBIC_DATABASE_URL") or settings.DATABASE_URL
+    return url
+
+
 def run_migrations_offline() -> None:
-    url = settings.DATABASE_URL
+    url = get_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -27,8 +39,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    url = get_url()
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = settings.DATABASE_URL
+    configuration["sqlalchemy.url"] = url
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",

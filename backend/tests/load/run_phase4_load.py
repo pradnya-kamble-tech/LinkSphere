@@ -39,13 +39,13 @@ def run_locust_single(env, user_class, users, run_time_sec, host, csv_prefix):
         sys.executable,
         "-m", "locust",
         "-f", locust_file,
-        user_class,
         "--headless",
         "--users", str(users),
         "--spawn-rate", str(min(users, 50)),
         "--run-time", f"{run_time_sec}s",
         "--host", host,
         "--csv", csv_prefix,
+        user_class,
     ]
     p = subprocess.Popen(
         cmd,
@@ -92,19 +92,36 @@ def main():
         results["db_ping"] = stats_db
 
         # 2. redirect on redir50
-        print("\n[2/4] Running Redirect GET /redir50 (50 users, 15s)...")
-        # Clear clicks before test
+        print("\n[2/4] Running Redirect GET /redir50 (50 users, 30s)...")
+        # Ensure redir50 exists and clear prior clicks
         db = SessionLocal()
-        db.execute(text("DELETE FROM click_events WHERE link_id = :lid"), {"lid": redir_link_id})
+        redir_link = db.query(Link).filter_by(short_code="redir50").first()
+        if not redir_link:
+            redir_link = Link(
+                user_id=user_id,
+                short_code="redir50",
+                original_url="https://example.com/redirect-dest",
+                is_active=True,
+            )
+            db.add(redir_link)
+            db.commit()
+            db.refresh(redir_link)
+        else:
+            redir_link.is_active = True
+            redir_link.deleted_at = None
+            db.commit()
+
+        db.execute(text("DELETE FROM click_events WHERE link_id = :lid"), {"lid": redir_link.id})
         db.commit()
+        redir_link_id = redir_link.id
         db.close()
 
         csv_redir = os.path.join(os.path.dirname(__file__), "phase4_redirect")
-        stats_redir = run_locust_single(env, "RedirectLinkUser", 50, 15, "http://127.0.0.1:8028", csv_redir)
+        stats_redir = run_locust_single(env, "RedirectLinkUser", 50, 30, "http://127.0.0.1:8028", csv_redir)
         results["redirect"] = stats_redir
 
         # Wait up to 5s for background click recording tasks to finish writing
-        time.sleep(3)
+        time.sleep(5)
         db = SessionLocal()
         actual_clicks = db.execute(select(func.count(ClickEvent.id)).where(ClickEvent.link_id == redir_link_id)).scalar() or 0
         db.close()

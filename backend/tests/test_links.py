@@ -494,3 +494,87 @@ def test_sanitize_referrer():
     assert sanitize_referrer(None) is None
     assert sanitize_referrer("") is None
     assert sanitize_referrer("invalid-uri-no-scheme") is None
+
+
+# =========================================================================
+# 7. PHASE 4 FIXES VERIFICATION TESTS (ITEMS 3 & 6)
+# =========================================================================
+
+@pytest.mark.anyio
+async def test_post_links_sql_statement_count(async_client: httpx.AsyncClient, auth_user, test_engine):
+    """Count SQL statements executed during a single POST /api/links request."""
+    from sqlalchemy import event
+
+    user, token = auth_user
+    async_client.cookies.set("session_token", token)
+
+    executed_statements = []
+
+    def count_sql(conn, cursor, statement, parameters, context, executemany):
+        executed_statements.append(statement.strip())
+
+    event.listen(test_engine, "before_cursor_execute", count_sql)
+    try:
+        resp = await async_client.post(
+            "/api/links",
+            json={"original_url": "https://example.com/test-sql-count"},
+            headers={"Origin": settings.FRONTEND_ORIGIN},
+        )
+        assert resp.status_code == 201
+    finally:
+        event.remove(test_engine, "before_cursor_execute", count_sql)
+
+    # Filter out connection pool ping if any
+    real_statements = [s for s in executed_statements if not s.startswith("SELECT 1")]
+    print(f"\nSQL STATEMENTS COUNT: {len(real_statements)}")
+    for i, st in enumerate(real_statements, 1):
+        print(f"  {i}. {st.splitlines()[0]}")
+    assert len(real_statements) <= 7, f"Expected <= 7 SQL statements, got {len(real_statements)}: {real_statements}"
+
+
+@pytest.mark.anyio
+async def test_post_links_no_dns_or_network_calls(async_client: httpx.AsyncClient, auth_user, monkeypatch):
+    """Verify URL validation never makes DNS (getaddrinfo/gethostbyname) or socket network calls."""
+    import socket
+
+    def forbidden_dns(*args, **kwargs):
+        raise AssertionError("FORBIDDEN: DNS resolution was attempted during URL validation!")
+
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden_dns)
+    monkeypatch.setattr(socket, "gethostbyname", forbidden_dns)
+    monkeypatch.setattr(socket, "gethostbyname_ex", forbidden_dns)
+
+    user, token = auth_user
+    async_client.cookies.set("session_token", token)
+
+    resp = await async_client.post(
+        "/api/links",
+        json={"original_url": "https://valid-external-destination.com/no-dns-test"},
+        headers={"Origin": settings.FRONTEND_ORIGIN},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["original_url"] == "https://valid-external-destination.com/no-dns-test"
+
+
+@pytest.mark.anyio
+async def test_html_error_pages_no_reflected_xss(async_client: httpx.AsyncClient):
+    """HTML 404 and 410 error pages must never echo user input or short code unescaped (XSS safety)."""
+    xss_payloads = [
+        "<script>alert(1)",
+        "<img src=x onerror=alert('xss')>",
+        "\"><svg onload=alert(1)>",
+        "';alert(1)",
+        "<script>console.log(1)",
+    ]
+
+    for payload in xss_payloads:
+        resp = await async_client.get(f"/{payload}", follow_redirects=False)
+        assert resp.status_code == 404
+        assert "text/html" in resp.headers.get("content-type", "")
+        # Payload must NEVER appear in the response body
+        assert payload not in resp.text
+        assert "<script>" not in resp.text
+        assert "onerror" not in resp.text
+        assert "<svg" not in resp.text
+        assert "404 - Link Not Found" in resp.text
+

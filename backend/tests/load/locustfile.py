@@ -1,6 +1,3 @@
-from gevent import monkey
-monkey.patch_all()
-
 import os
 import secrets
 import time
@@ -175,8 +172,8 @@ class DiagnosticDbPingUser(FastHttpUser):
                 resp.failure(f"Expected 200 but got {resp.status_code}")
 
 
-class RedirectLinkUser(HttpUser):
-    wait_time = between(0.01, 0.05)
+class RedirectLinkUser(FastHttpUser):
+    wait_time = between(0.001, 0.005)
 
     @task
     def redirect_link(self):

@@ -35,18 +35,11 @@ def create_link(db: Session, user_id: uuid.UUID, link_in: LinkCreate) -> Link:
     """
     Create a new link for the user.
     Handles custom aliases and auto-generated base62 codes.
-    If short code was soft-deleted, it is still reserved forever (returns 409).
+    Rely strictly on the database unique constraint + savepoint retry for collision
+    handling without redundant pre-check round-trips.
     """
     if link_in.custom_code:
         custom = link_in.custom_code
-        # Check if code exists anywhere in links (active or soft-deleted)
-        existing = db.execute(select(Link.id).where(Link.short_code == custom)).first()
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Short code '{custom}' is already in use",
-            )
-
         link = Link(
             user_id=user_id,
             short_code=custom,
@@ -54,13 +47,15 @@ def create_link(db: Session, user_id: uuid.UUID, link_in: LinkCreate) -> Link:
             expires_at=link_in.expires_at,
             is_active=True,
         )
-        db.add(link)
+        nested = db.begin_nested()
         try:
+            db.add(link)
+            nested.commit()
             db.commit()
             db.refresh(link)
             return link
         except IntegrityError:
-            db.rollback()
+            nested.rollback()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Short code '{custom}' is already in use",
@@ -69,11 +64,6 @@ def create_link(db: Session, user_id: uuid.UUID, link_in: LinkCreate) -> Link:
     # Auto-generated short code with collision retry up to 3 times in a savepoint
     for attempt in range(3):
         code = generate_short_code(7)
-        # Fast pre-check
-        existing = db.execute(select(Link.id).where(Link.short_code == code)).first()
-        if existing:
-            continue
-
         nested = db.begin_nested()
         try:
             link = Link(

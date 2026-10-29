@@ -925,19 +925,20 @@ async def test_google_jwks_endpoint_unreachable(async_client: httpx.AsyncClient)
 @pytest.mark.anyio
 async def test_diagnostic_endpoints_gated_outside_test():
     """Diagnostic endpoints return 404 when app is initialized with non-test ENVIRONMENT."""
-    from fastapi.testclient import TestClient
     from app.main import app
+    from httpx import ASGITransport, AsyncClient
 
     # In current test run (ENVIRONMENT=test), routes exist
-    with TestClient(app) as client:
-        resp = client.get("/api/diagnostic/ping-async")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/diagnostic/ping-async")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
     # In a simulated non-test environment, define app without the test gate
     from fastapi import FastAPI
     prod_app = FastAPI()
-    # Diagnostic endpoints are omitted when ENVIRONMENT != test
-    with TestClient(prod_app) as client:
-        assert client.get("/api/diagnostic/ping-async").status_code == 404
-        assert client.get("/api/diagnostic/ping-sync").status_code == 404
+    async with AsyncClient(transport=ASGITransport(app=prod_app), base_url="http://test") as client:
+        resp1 = await client.get("/api/diagnostic/ping-async")
+        assert resp1.status_code == 404
+        resp2 = await client.get("/api/diagnostic/ping-sync")
+        assert resp2.status_code == 404

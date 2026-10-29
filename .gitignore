@@ -11,4 +11,4 @@ __pycache__/
 **/__pycache__/
 *.pyc
 .DS_Store
-backend/tests/load/locust_*.csv
+backend/tests/load/*.csv

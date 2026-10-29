@@ -2,6 +2,7 @@ import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, Request, Response, HTTPException, status
 from fastapi.responses import RedirectResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -18,7 +19,7 @@ from app.auth.oauth import (
     get_google_auth_url,
     get_github_auth_url,
     exchange_google_code,
-    parse_unverified_id_token_payload,
+    verify_google_id_token,
     exchange_github_code,
     fetch_github_profile,
 )
@@ -116,20 +117,24 @@ async def oauth_callback(
             if not id_token:
                 return RedirectResponse(f"{settings.FRONTEND_ORIGIN}/login?error=provider_error", status_code=status.HTTP_302_FOUND)
 
-            claims = parse_unverified_id_token_payload(id_token)
+            try:
+                claims = await verify_google_id_token(
+                    id_token=id_token,
+                    expected_nonce=payload.get("nonce", ""),
+                )
+            except ValueError as ve:
+                err_msg = str(ve)
+                if "nonce" in err_msg:
+                    err_code = "invalid_nonce"
+                elif "not verified" in err_msg:
+                    err_code = "email_not_verified"
+                elif "missing email" in err_msg:
+                    err_code = "no_verified_email"
+                else:
+                    err_code = "provider_error"
+                return RedirectResponse(f"{settings.FRONTEND_ORIGIN}/login?error={err_code}", status_code=status.HTTP_302_FOUND)
 
-            # Amendment 2: Validate nonce
-            if claims.get("nonce") != payload.get("nonce"):
-                return RedirectResponse(f"{settings.FRONTEND_ORIGIN}/login?error=invalid_nonce", status_code=status.HTTP_302_FOUND)
-
-            # Validate email_verified
-            if not claims.get("email_verified"):
-                return RedirectResponse(f"{settings.FRONTEND_ORIGIN}/login?error=email_not_verified", status_code=status.HTTP_302_FOUND)
-
-            email = claims.get("email")
-            if not email:
-                return RedirectResponse(f"{settings.FRONTEND_ORIGIN}/login?error=no_verified_email", status_code=status.HTTP_302_FOUND)
-
+            email = claims["email"]
             provider_user_id = str(claims["sub"])
             name = claims.get("name")
             avatar_url = claims.get("picture")
@@ -149,7 +154,9 @@ async def oauth_callback(
             return RedirectResponse(f"{settings.FRONTEND_ORIGIN}/login?error=provider_error", status_code=status.HTTP_302_FOUND)
 
         # Concurrency-safe find-or-create inside single transaction with savepoint
-        user = find_or_create_user_and_identity(
+        # Run synchronous DB operations in threadpool to prevent blocking the asyncio event loop
+        user = await run_in_threadpool(
+            find_or_create_user_and_identity,
             db=db,
             provider=provider,
             provider_user_id=provider_user_id,
@@ -159,7 +166,7 @@ async def oauth_callback(
             avatar_url=avatar_url,
         )
 
-        raw_token, _ = create_user_session(db, user.id)
+        raw_token, _ = await run_in_threadpool(create_user_session, db, user.id)
 
         target_path = validate_next_path(payload.get("next"))
         response = RedirectResponse(

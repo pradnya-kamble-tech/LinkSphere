@@ -17,6 +17,21 @@ class Settings(BaseSettings):
     SESSION_LIFETIME_DAYS: int = 7
     SESSION_IDLE_TIMEOUT_HOURS: int = 24
 
+    # Database connection pool (configurable to prevent exhausting PostgreSQL max_connections)
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_PRE_PING: bool = True
+
+    # OAuth endpoints (configurable for local mocking and testing)
+    GOOGLE_AUTH_URL: str = "https://accounts.google.com/o/oauth2/v2/auth"
+    GOOGLE_TOKEN_URL: str = "https://oauth2.googleapis.com/token"
+    GOOGLE_CERTS_URL: str = "https://www.googleapis.com/oauth2/v3/certs"
+    GITHUB_AUTH_URL: str = "https://github.com/login/oauth/authorize"
+    GITHUB_TOKEN_URL: str = "https://github.com/login/oauth/access_token"
+    GITHUB_USER_URL: str = "https://api.github.com/user"
+    GITHUB_EMAILS_URL: str = "https://api.github.com/user/emails"
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",

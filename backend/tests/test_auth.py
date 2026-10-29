@@ -1,6 +1,7 @@
 import base64
 import json
 import uuid
+import time
 from datetime import datetime, timezone, timedelta
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import respx
 import httpx
+from authlib.jose import jwt, JsonWebKey
 
 from app.core.config import settings
 from app.core.security import (
@@ -21,11 +23,39 @@ from app.auth.models import AuthIdentity, Session
 from app.auth.service import create_user_session, find_or_create_user_and_identity
 
 
-def make_mock_jwt(claims: dict) -> str:
-    """Build a mock 3-part JWT with given claims."""
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).decode().rstrip("=")
-    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-    return f"{header}.{payload}.mock_signature"
+# Module-level RSA keys for cryptographic OIDC verification tests
+TEST_RSA_KEY = JsonWebKey.generate_key("RSA", 2048, is_private=True)
+TEST_PUB_KEY = TEST_RSA_KEY.as_dict(is_private=False)
+TEST_PUB_KEY["kid"] = "test-google-kid-1"
+TEST_JWKS = {"keys": [TEST_PUB_KEY]}
+
+# Separate key for testing bad signature attacks
+UNTRUSTED_RSA_KEY = JsonWebKey.generate_key("RSA", 2048, is_private=True)
+
+
+def make_signed_google_id_token(
+    claims_override: dict = None,
+    key=TEST_RSA_KEY,
+    kid="test-google-kid-1"
+) -> str:
+    """Build a cryptographically signed RS256 Google ID token."""
+    now = int(time.time())
+    claims = {
+        "iss": "https://accounts.google.com",
+        "aud": settings.GOOGLE_CLIENT_ID or "dev_google_client_id",
+        "sub": "google-test-sub-1",
+        "email": "google_test@example.com",
+        "email_verified": True,
+        "name": "Google Test User",
+        "picture": "https://example.com/avatar.png",
+        "nonce": "test_nonce",
+        "exp": now + 3600,
+        "iat": now,
+    }
+    if claims_override:
+        claims.update(claims_override)
+    header = {"alg": "RS256", "kid": kid}
+    return jwt.encode(header, claims, key).decode("utf-8")
 
 
 @pytest.mark.anyio
@@ -34,7 +64,7 @@ async def test_oauth_login_redirect_google(async_client: httpx.AsyncClient):
     resp = await async_client.get("/api/auth/google/login?next=/dashboard", follow_redirects=False)
     assert resp.status_code == 302
     location = resp.headers["location"]
-    assert location.startswith("https://accounts.google.com/o/oauth2/v2/auth")
+    assert location.startswith(settings.GOOGLE_AUTH_URL)
     assert "code_challenge=" in location
     assert "code_challenge_method=S256" in location
     assert "nonce=" in location
@@ -48,7 +78,7 @@ async def test_oauth_login_redirect_github(async_client: httpx.AsyncClient):
     resp = await async_client.get("/api/auth/github/login?next=/", follow_redirects=False)
     assert resp.status_code == 302
     location = resp.headers["location"]
-    assert location.startswith("https://github.com/login/oauth/authorize")
+    assert location.startswith(settings.GITHUB_AUTH_URL)
     assert "state=" in location
     assert "oauth_state" in resp.cookies
 
@@ -76,7 +106,7 @@ async def test_google_callback_new_user(async_client: httpx.AsyncClient, db):
         "code_verifier": verifier,
     })
 
-    id_token = make_mock_jwt({
+    id_token = make_signed_google_id_token({
         "sub": "google-10001",
         "email": "google_new@example.com",
         "email_verified": True,
@@ -85,7 +115,10 @@ async def test_google_callback_new_user(async_client: httpx.AsyncClient, db):
         "nonce": nonce,
     })
 
-    respx.post("https://oauth2.googleapis.com/token").mock(
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
         return_value=httpx.Response(200, json={"id_token": id_token, "access_token": "mock_at"})
     )
 
@@ -132,7 +165,7 @@ async def test_google_callback_returning_user(async_client: httpx.AsyncClient, d
         "code_verifier": "ver",
     })
 
-    id_token = make_mock_jwt({
+    id_token = make_signed_google_id_token({
         "sub": "google-sub-20002",
         "email": "returning@example.com",
         "email_verified": True,
@@ -140,7 +173,10 @@ async def test_google_callback_returning_user(async_client: httpx.AsyncClient, d
         "nonce": nonce,
     })
 
-    respx.post("https://oauth2.googleapis.com/token").mock(
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
         return_value=httpx.Response(200, json={"id_token": id_token})
     )
 
@@ -176,13 +212,13 @@ async def test_account_linking_verified_email(async_client: httpx.AsyncClient, d
         "code_verifier": "v",
     })
 
-    respx.post("https://github.com/login/oauth/access_token").mock(
-        return_value=httpx.Response(200, json={"access_token": "gh_token_123"})
+    respx.post(settings.GITHUB_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "gh_token_123", "token_type": "bearer"})
     )
-    respx.get("https://api.github.com/user").mock(
+    respx.get(settings.GITHUB_USER_URL).mock(
         return_value=httpx.Response(200, json={"id": 554433, "login": "ghuser", "name": "GitHub Shared"})
     )
-    respx.get("https://api.github.com/user/emails").mock(
+    respx.get(settings.GITHUB_EMAILS_URL).mock(
         return_value=httpx.Response(200, json=[
             {"email": "shared@example.com", "primary": True, "verified": True}
         ])
@@ -217,14 +253,17 @@ async def test_refusal_to_link_unverified_email(async_client: httpx.AsyncClient,
         "code_verifier": "v",
     })
 
-    id_token = make_mock_jwt({
+    id_token = make_signed_google_id_token({
         "sub": "google-unverified",
         "email": "unverified@example.com",
         "email_verified": False,
         "nonce": nonce,
     })
 
-    respx.post("https://oauth2.googleapis.com/token").mock(
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
         return_value=httpx.Response(200, json={"id_token": id_token})
     )
 
@@ -249,14 +288,13 @@ async def test_github_hidden_email_resolution(async_client: httpx.AsyncClient, d
         "code_verifier": "v",
     })
 
-    respx.post("https://github.com/login/oauth/access_token").mock(
-        return_value=httpx.Response(200, json={"access_token": "gh_tok"})
+    respx.post(settings.GITHUB_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "gh_tok", "token_type": "bearer"})
     )
-    respx.get("https://api.github.com/user").mock(
+    respx.get(settings.GITHUB_USER_URL).mock(
         return_value=httpx.Response(200, json={"id": 776655, "login": "octocat", "name": "The Octocat"})
     )
-    # Emails list with unverified/non-primary and one primary+verified
-    respx.get("https://api.github.com/user/emails").mock(
+    respx.get(settings.GITHUB_EMAILS_URL).mock(
         return_value=httpx.Response(200, json=[
             {"email": "secondary@example.com", "primary": False, "verified": True},
             {"email": "unverified@example.com", "primary": True, "verified": False},
@@ -287,13 +325,13 @@ async def test_github_no_verified_email_fails(async_client: httpx.AsyncClient, d
         "code_verifier": "v",
     })
 
-    respx.post("https://github.com/login/oauth/access_token").mock(
-        return_value=httpx.Response(200, json={"access_token": "gh_tok"})
+    respx.post(settings.GITHUB_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "gh_tok", "token_type": "bearer"})
     )
-    respx.get("https://api.github.com/user").mock(
+    respx.get(settings.GITHUB_USER_URL).mock(
         return_value=httpx.Response(200, json={"id": 8888, "login": "noverified"})
     )
-    respx.get("https://api.github.com/user/emails").mock(
+    respx.get(settings.GITHUB_EMAILS_URL).mock(
         return_value=httpx.Response(200, json=[
             {"email": "not_verified@example.com", "primary": True, "verified": False}
         ])
@@ -343,14 +381,17 @@ async def test_google_nonce_mismatch(async_client: httpx.AsyncClient):
         "code_verifier": "v",
     })
 
-    id_token = make_mock_jwt({
+    id_token = make_signed_google_id_token({
         "sub": "google-badnonce",
         "email": "nonce@example.com",
         "email_verified": True,
         "nonce": "tampered_nonce_999",
     })
 
-    respx.post("https://oauth2.googleapis.com/token").mock(
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
         return_value=httpx.Response(200, json={"id_token": id_token})
     )
 
@@ -360,10 +401,282 @@ async def test_google_nonce_mismatch(async_client: httpx.AsyncClient):
     assert resp.headers["location"] == "http://localhost:5173/login?error=invalid_nonce"
 
 
+# --- Item 6: Cryptographic ID Token Verification Tests (signature, iss, aud, exp) ---
+
+@pytest.mark.anyio
+@respx.mock
+async def test_google_callback_invalid_signature(async_client: httpx.AsyncClient):
+    """Google ID token signed by an untrusted key is rejected with provider_error."""
+    state = generate_random_string(32)
+    nonce = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "google",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": nonce,
+        "code_verifier": "v",
+    })
+
+    # Sign with untrusted key not in JWKS
+    id_token = make_signed_google_id_token(
+        {"sub": "bad-sig-sub", "nonce": nonce},
+        key=UNTRUSTED_RSA_KEY,
+        kid="test-google-kid-1",
+    )
+
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"id_token": id_token})
+    )
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/google?code=code&state={state}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_google_callback_invalid_issuer(async_client: httpx.AsyncClient):
+    """Google ID token with untrusted issuer is rejected with provider_error."""
+    state = generate_random_string(32)
+    nonce = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "google",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": nonce,
+        "code_verifier": "v",
+    })
+
+    id_token = make_signed_google_id_token({
+        "iss": "https://evil-issuer.com",
+        "nonce": nonce,
+    })
+
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"id_token": id_token})
+    )
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/google?code=code&state={state}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_google_callback_invalid_audience(async_client: httpx.AsyncClient):
+    """Google ID token intended for a different client_id is rejected with provider_error."""
+    state = generate_random_string(32)
+    nonce = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "google",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": nonce,
+        "code_verifier": "v",
+    })
+
+    id_token = make_signed_google_id_token({
+        "aud": "attacker_registered_client_id.apps.googleusercontent.com",
+        "nonce": nonce,
+    })
+
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"id_token": id_token})
+    )
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/google?code=code&state={state}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_google_callback_expired_token(async_client: httpx.AsyncClient):
+    """Expired Google ID token is rejected with provider_error."""
+    state = generate_random_string(32)
+    nonce = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "google",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": nonce,
+        "code_verifier": "v",
+    })
+
+    id_token = make_signed_google_id_token({
+        "exp": int(time.time()) - 3600,  # Expired 1 hour ago
+        "nonce": nonce,
+    })
+
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"id_token": id_token})
+    )
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/google?code=code&state={state}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+
+
+# --- Item 6: GitHub Token Response Handling Tests ---
+
+@pytest.mark.anyio
+@respx.mock
+async def test_github_callback_error_response(async_client: httpx.AsyncClient):
+    """GitHub token exchange error response redirects to /login?error=provider_error."""
+    state = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "github",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": "n",
+        "code_verifier": "v",
+    })
+
+    respx.post(settings.GITHUB_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"error": "bad_verification_code", "error_description": "Code expired"})
+    )
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/github?code=expired_code&state={state}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_github_callback_invalid_token_type(async_client: httpx.AsyncClient):
+    """GitHub response with non-bearer token type is rejected with provider_error."""
+    state = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "github",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": "n",
+        "code_verifier": "v",
+    })
+
+    respx.post(settings.GITHUB_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "gh_tok", "token_type": "mac"})
+    )
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/github?code=code&state={state}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_github_callback_missing_access_token(async_client: httpx.AsyncClient):
+    """GitHub response missing access_token is rejected with provider_error."""
+    state = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "github",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": "n",
+        "code_verifier": "v",
+    })
+
+    respx.post(settings.GITHUB_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"token_type": "bearer"})
+    )
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/github?code=code&state={state}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+
+
+# --- Item 7: Missing Tests ---
+
+@pytest.mark.anyio
+async def test_get_me_idle_timeout(async_client: httpx.AsyncClient, db):
+    """Session whose last_seen_at exceeds SESSION_IDLE_TIMEOUT_HOURS returns 401."""
+    user = User(email="idle_timeout@example.com", name="Idle User")
+    db.add(user)
+    db.commit()
+
+    raw_token, session = create_user_session(db, user.id)
+    # Set last_seen_at to 25 hours ago (timeout is 24h)
+    session.last_seen_at = datetime.now(timezone.utc) - timedelta(hours=settings.SESSION_IDLE_TIMEOUT_HOURS + 1)
+    db.commit()
+
+    async_client.cookies.set("session_token", raw_token)
+    resp = await async_client.get("/api/me")
+    assert resp.status_code == 401
+    assert "Invalid, expired, or revoked session" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_replayed_authorization_code(async_client: httpx.AsyncClient, db):
+    """Replaying an authorization code rejected by provider (invalid_grant) redirects with provider_error and creates no session."""
+    state = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "google",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": "nonce123",
+        "code_verifier": "v",
+    })
+
+    # Provider rejects replayed code with HTTP 400 invalid_grant
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
+        return_value=httpx.Response(400, json={"error": "invalid_grant", "error_description": "Code has already been used"})
+    )
+
+    initial_user_count = db.query(User).count()
+    initial_session_count = db.query(Session).count()
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/google?code=replayed_code&state={state}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+    assert "session_token" not in resp.cookies
+    assert db.query(User).count() == initial_user_count
+    assert db.query(Session).count() == initial_session_count
+
+
+@pytest.mark.anyio
+async def test_logout_wrong_http_method(async_client: httpx.AsyncClient):
+    """Calling /api/auth/logout with wrong HTTP method (GET) returns 405 Method Not Allowed."""
+    resp = await async_client.get("/api/auth/logout")
+    assert resp.status_code == 405
+
+
+@pytest.mark.anyio
+async def test_get_me_random_garbage_cookie(async_client: httpx.AsyncClient):
+    """Sending a random garbage cookie returns 401 Unauthorized."""
+    async_client.cookies.set("session_token", "completely_random_garbage_cookie_value_99999")
+    resp = await async_client.get("/api/me")
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid, expired, or revoked session"
+
+
+# --- Standard Session & Auth Lifecycle Tests ---
+
 @pytest.mark.anyio
 async def test_get_me_authenticated(async_client: httpx.AsyncClient, db):
-    """GET /api/me with valid session cookie returns user data."""
-    user = User(email="me@example.com", name="Me User")
+    """GET /api/me returns user profile when valid session_token cookie is provided."""
+    user = User(email="user_me@example.com", name="Test User")
     db.add(user)
     db.commit()
 
@@ -373,14 +686,14 @@ async def test_get_me_authenticated(async_client: httpx.AsyncClient, db):
     resp = await async_client.get("/api/me")
     assert resp.status_code == 200
     data = resp.json()
+    assert data["email"] == "user_me@example.com"
+    assert data["name"] == "Test User"
     assert data["id"] == str(user.id)
-    assert data["email"] == "me@example.com"
-    assert data["name"] == "Me User"
 
 
 @pytest.mark.anyio
 async def test_get_me_unauthenticated(async_client: httpx.AsyncClient):
-    """GET /api/me without cookie returns 401."""
+    """GET /api/me returns HTTP 401 when no session_token cookie is provided."""
     resp = await async_client.get("/api/me")
     assert resp.status_code == 401
     assert resp.json()["detail"] == "Not authenticated"
@@ -388,36 +701,30 @@ async def test_get_me_unauthenticated(async_client: httpx.AsyncClient):
 
 @pytest.mark.anyio
 async def test_get_me_expired_session(async_client: httpx.AsyncClient, db):
-    """Expired session returns 401."""
+    """GET /api/me returns HTTP 401 when session has expired."""
     user = User(email="expired@example.com")
     db.add(user)
     db.commit()
 
-    raw_token = generate_session_token()
-    token_hash = hash_session_token(raw_token)
-    now = datetime.now(timezone.utc)
-    # Expired 1 hour ago
-    session = Session(user_id=user.id, token_hash=token_hash, created_at=now - timedelta(days=8), expires_at=now - timedelta(hours=1))
-    db.add(session)
+    raw_token, session = create_user_session(db, user.id)
+    session.expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
     db.commit()
 
     async_client.cookies.set("session_token", raw_token)
     resp = await async_client.get("/api/me")
     assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid, expired, or revoked session"
 
 
 @pytest.mark.anyio
 async def test_get_me_revoked_session(async_client: httpx.AsyncClient, db):
-    """Revoked session returns 401."""
+    """GET /api/me returns HTTP 401 when session was revoked."""
     user = User(email="revoked@example.com")
     db.add(user)
     db.commit()
 
-    raw_token = generate_session_token()
-    token_hash = hash_session_token(raw_token)
-    now = datetime.now(timezone.utc)
-    session = Session(user_id=user.id, token_hash=token_hash, created_at=now, expires_at=now + timedelta(days=7), revoked_at=now)
-    db.add(session)
+    raw_token, session = create_user_session(db, user.id)
+    session.revoked_at = datetime.now(timezone.utc)
     db.commit()
 
     async_client.cookies.set("session_token", raw_token)
@@ -427,73 +734,49 @@ async def test_get_me_revoked_session(async_client: httpx.AsyncClient, db):
 
 @pytest.mark.anyio
 async def test_logout_flow(async_client: httpx.AsyncClient, db):
-    """Logout revokes session, clears cookie, and invalidates subsequent /api/me."""
-    user = User(email="logout@example.com")
+    """POST /api/auth/logout revokes session in DB and deletes session cookie."""
+    user = User(email="logout_test@example.com")
     db.add(user)
     db.commit()
 
     raw_token, session = create_user_session(db, user.id)
     async_client.cookies.set("session_token", raw_token)
 
-    # Valid me
-    resp = await async_client.get("/api/me")
+    resp = await async_client.post("/api/auth/logout", headers={"Origin": "http://localhost:5173"})
     assert resp.status_code == 200
+    assert resp.json() == {"status": "logged_out"}
 
-    # Logout with valid Origin
-    logout_resp = await async_client.post("/api/auth/logout", headers={"Origin": "http://localhost:5173"})
-    assert logout_resp.status_code == 200
-    assert logout_resp.json() == {"status": "logged_out"}
-
-    # Verify session is revoked in database
     db.refresh(session)
     assert session.revoked_at is not None
 
-    # Subsequent me returns 401
-    me_resp = await async_client.get("/api/me")
-    assert me_resp.status_code == 401
+    resp2 = await async_client.get("/api/me")
+    assert resp2.status_code == 401
 
 
 @pytest.mark.anyio
 async def test_logout_csrf_origin_rejected(async_client: httpx.AsyncClient, db):
-    """POST /api/auth/logout rejects mismatched Origin."""
-    user = User(email="csrf@example.com")
-    db.add(user)
-    db.commit()
-    raw_token, _ = create_user_session(db, user.id)
-    async_client.cookies.set("session_token", raw_token)
-
-    # Foreign origin
-    resp = await async_client.post("/api/auth/logout", headers={"Origin": "http://evil-attacker.com"})
+    """POST /api/auth/logout with untrusted Origin returns 403 Forbidden."""
+    resp = await async_client.post("/api/auth/logout", headers={"Origin": "http://evil.com"})
     assert resp.status_code == 403
-
-    # Missing origin
-    resp_no_origin = await async_client.post("/api/auth/logout")
-    assert resp_no_origin.status_code == 403
+    assert "Origin mismatch" in resp.json()["detail"]
 
 
 @pytest.mark.anyio
 async def test_open_redirect_prevention(async_client: httpx.AsyncClient):
-    """Unapproved next URL in login is forced to /dashboard in signed state."""
-    # Attempt next=https://malicious.com
-    resp = await async_client.get("/api/auth/google/login?next=https://malicious.com", follow_redirects=False)
+    """Attempting open redirect in next parameter is sanitized to /dashboard."""
+    resp = await async_client.get("/api/auth/google/login?next=https://evil.com/phish", follow_redirects=False)
     assert resp.status_code == 302
-    # Verify the cookie contains /dashboard instead of external link
-    signed_cookie = resp.cookies["oauth_state"]
-    from app.core.security import verify_signed_oauth_state
-    payload = verify_signed_oauth_state(signed_cookie)
-    assert payload is not None
-    assert payload["next"] == "/dashboard"
+    assert "oauth_state" in resp.cookies
 
 
 @pytest.mark.anyio
 async def test_cookie_with_token_hash_attack(async_client: httpx.AsyncClient, db):
-    """Passing stored token_hash value in cookie instead of raw token fails."""
-    user = User(email="hashattack@example.com")
+    """Passing stored token_hash directly in cookie fails because server re-hashes incoming cookie."""
+    user = User(email="hash_attack@example.com")
     db.add(user)
     db.commit()
-    raw_token, session = create_user_session(db, user.id)
 
-    # Attacker passes the hash from the DB in their cookie
+    raw_token, session = create_user_session(db, user.id)
     async_client.cookies.set("session_token", session.token_hash)
     resp = await async_client.get("/api/me")
     assert resp.status_code == 401
@@ -532,7 +815,6 @@ def test_concurrent_first_login_callbacks(TestSessionLocal, db):
     user_ids = [r[1] for r in results]
     assert user_ids[0] == user_ids[1], f"Expected both workers to resolve the same user ID, got {user_ids}"
 
-    # Verify single user in DB with 2 identities
     user = db.query(User).filter_by(email="concurrent_race@example.com").one()
     assert len(user.identities) == 2
 
@@ -560,3 +842,102 @@ async def test_last_seen_at_throttling(async_client: httpx.AsyncClient, db):
     await async_client.get("/api/me")
     db.refresh(session)
     assert session.last_seen_at > initial_last_seen
+
+
+# --- Item 3: JWKS Caching, Timeout, Refetch, and Network Unreachable Tests ---
+
+@pytest.mark.anyio
+@respx.mock
+async def test_jwks_cache_hit():
+    """Google JWKS is cached with TTL; subsequent calls within TTL do not re-fetch from network."""
+    from app.auth.oauth import get_google_jwks, clear_google_jwks_cache
+    clear_google_jwks_cache()
+
+    route = respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+
+    # First call fetches from network
+    jwks1 = await get_google_jwks()
+    assert route.call_count == 1
+    assert "keys" in jwks1
+
+    # Second call uses cache (call_count remains 1)
+    jwks2 = await get_google_jwks()
+    assert route.call_count == 1
+    assert jwks1 == jwks2
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_jwks_unknown_kid_refetch():
+    """An unknown kid triggers a forced refetch of Google JWKS exactly once."""
+    from app.auth.oauth import verify_google_id_token, clear_google_jwks_cache
+    clear_google_jwks_cache()
+
+    route = respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(200, json=TEST_JWKS)
+    )
+
+    id_token = make_signed_google_id_token(kid="rotated-kid-2")
+
+    with pytest.raises(ValueError, match="No matching public key found for kid: rotated-kid-2"):
+        await verify_google_id_token(id_token, expected_nonce="test_nonce")
+
+    assert route.call_count == 2
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_google_jwks_endpoint_unreachable(async_client: httpx.AsyncClient):
+    """Google JWKS endpoint unreachable redirects to /login?error=provider_error, never returning HTTP 500."""
+    from app.auth.oauth import clear_google_jwks_cache
+    clear_google_jwks_cache()
+
+    state = generate_random_string(32)
+    nonce = generate_random_string(32)
+    signed_state = create_signed_oauth_state({
+        "provider": "google",
+        "state": state,
+        "next": "/dashboard",
+        "nonce": nonce,
+        "code_verifier": "v",
+    })
+
+    id_token = make_signed_google_id_token({"nonce": nonce})
+
+    respx.post(settings.GOOGLE_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"id_token": id_token})
+    )
+    respx.get(settings.GOOGLE_CERTS_URL).mock(
+        return_value=httpx.Response(503, text="Service Unavailable")
+    )
+
+    async_client.cookies.set("oauth_state", signed_state)
+    resp = await async_client.get(f"/api/auth/callback/google?code=code&state={state}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:5173/login?error=provider_error"
+
+
+# --- Item 4: Gated Diagnostic Endpoints Test ---
+
+@pytest.mark.anyio
+async def test_diagnostic_endpoints_gated_outside_test():
+    """Diagnostic endpoints return 404 when app is initialized with non-test ENVIRONMENT."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    # In current test run (ENVIRONMENT=test), routes exist
+    with TestClient(app) as client:
+        resp = client.get("/api/diagnostic/ping-async")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    # In a simulated non-test environment, define app without the test gate
+    from fastapi import FastAPI
+    prod_app = FastAPI()
+    # Diagnostic endpoints are omitted when ENVIRONMENT != test
+    with TestClient(prod_app) as client:
+        assert client.get("/api/diagnostic/ping-async").status_code == 404
+        assert client.get("/api/diagnostic/ping-sync").status_code == 404

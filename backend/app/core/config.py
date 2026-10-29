@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     SESSION_LIFETIME_DAYS: int = 7
     SESSION_IDLE_TIMEOUT_HOURS: int = 24
 
+    SHORT_LINK_BASE_URL: str = "http://localhost:8001"
+
     # Database connection pool (configurable to prevent exhausting PostgreSQL max_connections)
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 10

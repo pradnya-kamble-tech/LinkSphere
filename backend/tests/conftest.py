@@ -67,9 +67,22 @@ def test_engine(setup_test_database):
     engine.dispose()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def override_db_session_factory(test_engine):
+    import app.core.db
+    old_session_local = app.core.db.SessionLocal
+    old_engine = app.core.db.engine
+    test_session_maker = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+    app.core.db.engine = test_engine
+    app.core.db.SessionLocal = test_session_maker
+    yield test_session_maker
+    app.core.db.engine = old_engine
+    app.core.db.SessionLocal = old_session_local
+
+
 @pytest.fixture(scope="session")
-def TestSessionLocal(test_engine):
-    return sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+def TestSessionLocal(override_db_session_factory):
+    return override_db_session_factory
 
 
 @pytest.fixture

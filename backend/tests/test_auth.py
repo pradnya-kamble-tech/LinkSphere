@@ -933,6 +933,9 @@ async def test_diagnostic_endpoints_gated_outside_test():
         resp = await client.get("/api/diagnostic/ping-async")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
+        resp_db = await client.get("/api/diagnostic/db-ping")
+        assert resp_db.status_code == 200
+        assert resp_db.json() == {"status": "ok"}
 
     # In a simulated non-test environment, define app without the test gate
     from fastapi import FastAPI
@@ -942,3 +945,5 @@ async def test_diagnostic_endpoints_gated_outside_test():
         assert resp1.status_code == 404
         resp2 = await client.get("/api/diagnostic/ping-sync")
         assert resp2.status_code == 404
+        resp3 = await client.get("/api/diagnostic/db-ping")
+        assert resp3.status_code == 404

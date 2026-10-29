@@ -13,6 +13,12 @@ import app.analytics.models  # noqa: F401
 from app.api.health import router as health_router
 from app.auth.router import router as auth_router
 from app.users.router import router as users_router
+from app.links.router import router as links_router
+from app.redirect.router import router as redirect_router
+from app.core.db import get_db
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from fastapi import Depends
 
 
 @asynccontextmanager
@@ -36,13 +42,10 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
+app.include_router(links_router, prefix="/api")
 
 # Also maintain /health for backward compatibility
 app.include_router(health_router)
-
-
-
-
 
 # Gated diagnostic endpoints: strictly available only when ENVIRONMENT=test
 if settings.ENVIRONMENT.lower() == "test":
@@ -55,3 +58,12 @@ if settings.ENVIRONMENT.lower() == "test":
     def diagnostic_ping_sync():
         """Trivial sync endpoint (threadpool) without database access for diagnosing threadpool latency."""
         return {"status": "ok"}
+
+    @app.get("/api/diagnostic/db-ping")
+    def diagnostic_db_ping(db: Session = Depends(get_db)):
+        """Baseline endpoint executing SELECT 1 through the connection pool."""
+        db.execute(text("SELECT 1;"))
+        return {"status": "ok"}
+
+# Redirect route MUST be registered last so it does not intercept API or system routes
+app.include_router(redirect_router)

@@ -48,7 +48,7 @@ def test_schema_columns_and_no_ip_address(test_engine):
 
     # 5. Verify links columns
     link_columns = {col["name"]: col for col in inspector.get_columns("links")}
-    expected_link_cols = {"id", "user_id", "short_code", "original_url", "is_active", "expires_at", "created_at"}
+    expected_link_cols = {"id", "user_id", "short_code", "original_url", "is_active", "expires_at", "created_at", "deleted_at"}
     assert set(link_columns.keys()) == expected_link_cols
 
 
@@ -319,8 +319,20 @@ def test_concurrent_short_code_inserts(TestSessionLocal, db):
 
 
 def test_alembic_downgrade_and_upgrade_cycle(alembic_test_cfg, test_engine):
-    """Alembic downgrade base cleanly removes everything, and upgrade head restores it (runs ONLY on test DB)."""
-    # 1. Downgrade to base
+    """Alembic downgrade/upgrade cycle testing migration 0002 downgrade and base downgrade (runs ONLY on test DB)."""
+    # 1. Downgrade from 0002 to 0001
+    command.downgrade(alembic_test_cfg, "0001_initial_schema")
+    inspector = inspect(test_engine)
+    cols_0001 = {col["name"] for col in inspector.get_columns("links")}
+    assert "deleted_at" not in cols_0001, "Column deleted_at was not removed after downgrade to 0001!"
+
+    # 2. Upgrade back to head
+    command.upgrade(alembic_test_cfg, "head")
+    inspector = inspect(test_engine)
+    cols_head = {col["name"] for col in inspector.get_columns("links")}
+    assert "deleted_at" in cols_head, "Column deleted_at missing after upgrade to head!"
+
+    # 3. Full downgrade to base
     command.downgrade(alembic_test_cfg, "base")
 
     # Verify tables are dropped
@@ -330,7 +342,7 @@ def test_alembic_downgrade_and_upgrade_cycle(alembic_test_cfg, test_engine):
         f"Tables remained after downgrade: {remaining_tables}"
     )
 
-    # 2. Upgrade back to head
+    # 4. Upgrade back to head
     command.upgrade(alembic_test_cfg, "head")
 
     # Verify tables are restored

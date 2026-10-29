@@ -46,3 +46,92 @@ export async function logoutUser(): Promise<void> {
     throw new Error(`Logout failed: HTTP ${resp.status}`)
   }
 }
+
+export interface LinkItem {
+  id: number
+  short_code: string
+  short_url: string
+  original_url: string
+  is_active: boolean
+  expires_at: string | null
+  created_at: string
+  click_count: number
+}
+
+export interface LinkListResponse {
+  items: LinkItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export async function fetchLinks(limit = 50, offset = 0): Promise<LinkListResponse> {
+  const resp = await fetch(`/api/links?limit=${limit}&offset=${offset}`, {
+    credentials: 'include',
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to load links: HTTP ${resp.status}`)
+  }
+  return resp.json()
+}
+
+export async function createLink(data: {
+  original_url: string
+  custom_code?: string
+  expires_at?: string
+}): Promise<LinkItem> {
+  const resp = await fetch('/api/links', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'Origin': window.location.origin,
+    },
+    body: JSON.stringify(data),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    const msg = typeof err.detail === 'string' ? err.detail : Array.isArray(err.detail) ? err.detail[0]?.msg : null
+    throw new Error(msg || `Failed to create link: HTTP ${resp.status}`)
+  }
+  return resp.json()
+}
+
+export async function updateLink(
+  id: number,
+  data: {
+    is_active?: boolean
+    expires_at?: string
+  }
+): Promise<LinkItem> {
+  const resp = await fetch(`/api/links/${id}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'Origin': window.location.origin,
+    },
+    body: JSON.stringify(data),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    const msg = typeof err.detail === 'string' ? err.detail : null
+    throw new Error(msg || `Failed to update link: HTTP ${resp.status}`)
+  }
+  return resp.json()
+}
+
+export async function deleteLink(id: number): Promise<void> {
+  const resp = await fetch(`/api/links/${id}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: {
+      'Origin': window.location.origin,
+    },
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    const msg = typeof err.detail === 'string' ? err.detail : null
+    throw new Error(msg || `Failed to delete link: HTTP ${resp.status}`)
+  }
+}

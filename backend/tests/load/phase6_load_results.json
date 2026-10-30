@@ -1,0 +1,46 @@
+[
+  {
+    "endpoint": "/api/analytics/summary?range=30&tz=UTC",
+    "total_requests": 1035,
+    "rps": 66.0,
+    "p50_ms": 524.16,
+    "p95_ms": 1931.72,
+    "p99_ms": 2748.46,
+    "status_codes": {
+      "200": 1035
+    }
+  },
+  {
+    "endpoint": "/api/analytics/timeseries?range=30&tz=UTC",
+    "total_requests": 764,
+    "rps": 44.5,
+    "p50_ms": 658.12,
+    "p95_ms": 3101.32,
+    "p99_ms": 4845.18,
+    "status_codes": {
+      "200": 764
+    }
+  },
+  {
+    "endpoint": "/api/analytics/top-links?range=30&tz=UTC&limit=10",
+    "total_requests": 572,
+    "rps": 36.8,
+    "p50_ms": 871.77,
+    "p95_ms": 4003.86,
+    "p99_ms": 5477.55,
+    "status_codes": {
+      "200": 572
+    }
+  },
+  {
+    "endpoint": "/api/analytics/breakdown?range=30&tz=UTC",
+    "total_requests": 244,
+    "rps": 13.3,
+    "p50_ms": 3563.99,
+    "p95_ms": 4498.56,
+    "p99_ms": 5854.98,
+    "status_codes": {
+      "200": 244
+    }
+  }
+]

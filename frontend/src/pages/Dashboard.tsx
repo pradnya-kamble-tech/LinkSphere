@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import {
   fetchMe,
   logoutUser,
@@ -178,13 +178,22 @@ export function Dashboard() {
     <div className="container">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>Dashboard</h1>
-        <button
-          onClick={handleSignOut}
-          disabled={loggingOut}
-          className="btn btn-secondary"
-        >
-          {loggingOut ? 'Signing out...' : 'Sign out'}
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <Link
+            to="/analytics"
+            className="btn btn-secondary"
+            style={{ padding: '0.4rem 0.8rem', textDecoration: 'none' }}
+          >
+            Analytics
+          </Link>
+          <button
+            onClick={handleSignOut}
+            disabled={loggingOut}
+            className="btn btn-secondary"
+          >
+            {loggingOut ? 'Signing out...' : 'Sign out'}
+          </button>
+        </div>
       </div>
 
       <div className="card" style={{ marginBottom: '2rem' }}>
@@ -343,7 +352,14 @@ export function Dashboard() {
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.25rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                     <span>Created: {new Date(link.created_at).toLocaleDateString()}</span>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <Link
+                        to={`/analytics?link_id=${link.id}`}
+                        className="btn btn-secondary"
+                        style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem', textDecoration: 'none' }}
+                      >
+                        View analytics
+                      </Link>
                       <button
                         onClick={() => handleToggleActive(link)}
                         className="btn btn-secondary"

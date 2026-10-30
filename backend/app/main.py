@@ -14,6 +14,7 @@ from app.api.health import router as health_router
 from app.auth.router import router as auth_router
 from app.users.router import router as users_router
 from app.links.router import router as links_router
+from app.analytics.router import router as analytics_router
 from app.redirect.router import router as redirect_router
 from app.core.db import get_db
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ app.include_router(health_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(links_router, prefix="/api")
+app.include_router(analytics_router, prefix="/api")
 
 # Also maintain /health for backward compatibility
 app.include_router(health_router)

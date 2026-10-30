@@ -35,7 +35,7 @@
 
 ### Issue 6: Typical-User Under-Load Tail Latency
 * **Observation**: Under 50 concurrent users, `GET /api/analytics/summary` for a typical user (20 links, 2,000 clicks) recorded a p95 latency of ~4.5–7.1 s on a 1M-row dataset.
-* **Investigation**: Pure query execution time is 19.9–30.8 ms. The p95 measured right after seeding 1M rows remained > 1 s even after manual `ANALYZE` and waiting for PostgreSQL autovacuum/analyze workers to be completely idle (p50: 1,336 ms, p95: 4,540 ms). Queuing across the threadpool under 50 simultaneous concurrent requests against a single shared CPU and disk on Windows accounts for the queue buildup. This is **not a capacity statement**.
+* **Investigation**: Pure query execution time is 19.9–30.8 ms. The p95 measured right after seeding 1M rows remained > 1 s even after manual `ANALYZE` and waiting for PostgreSQL autovacuum/analyze workers to be completely idle (p50: 1,336 ms, p95: 4,540 ms). Root cause unknown; consistent with queueing but not proven. Re-measure on the deployment host with a scaling curve at 1, 5, 20 and 50 concurrent users to see whether the server saturates or serializes. This is **not a capacity statement**.
 
 ### Issue 7: CASE Bucketing vs AT TIME ZONE Tradeoff
 * **Observation**: In the 1,000,000-row dataset:

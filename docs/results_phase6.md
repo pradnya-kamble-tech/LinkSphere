@@ -31,6 +31,6 @@ Typical User: 20 links, 2,000 clicks.
 2. **Worker Scaling Discrepancy**:
    * Across both redirect and analytics endpoints, 4 workers did not yield higher throughput than 1 worker (Redirect: 63.8 vs 76.5 req/s; Breakdown: 5.9 vs 8.0 req/s). Cause is UNKNOWN in local Windows Docker environment.
 3. **Typical-User Under-Load Latency**:
-   * Measured p95 of ~4.5–7.2 s for typical users under 50 simultaneous connections remained > 1 s even after manual `ANALYZE` and confirming idle PostgreSQL autovacuum processes.
+   * Measured p95 of ~4.5–7.2 s for typical users under 50 simultaneous connections remained > 1 s even after manual `ANALYZE` and confirming idle PostgreSQL autovacuum processes. Root cause unknown; consistent with queueing but not proven. Re-measure on the deployment host with a scaling curve at 1, 5, 20 and 50 concurrent users to see whether the server saturates or serializes. This is not a capacity statement.
 4. **Timezone Bucketing Choice**:
    * Python-computed CASE bucketing is 22.8% faster than `AT TIME ZONE` for typical users (30.8 vs 39.9 ms), but 131.7% slower for 1,000-link users (304.3 vs 131.3 ms). CASE bucketing is retained for safety against invalid IANA timezone 500s.

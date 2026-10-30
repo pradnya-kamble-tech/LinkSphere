@@ -6,7 +6,8 @@ backend_dir = os.path.abspath(".")
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-os.environ["ENVIRONMENT"] = "test"
+if "ENVIRONMENT" not in os.environ:
+    os.environ["ENVIRONMENT"] = "test"
 from app.main import app
 
 routes_list = []

@@ -387,3 +387,80 @@ async def test_analytics_invalid_inputs_and_adversarial(async_client: httpx.Asyn
     for bad_limit in [0, -1, 51, 1000]:
         resp = await async_client.get(f"/api/analytics/top-links?limit={bad_limit}")
         assert resp.status_code == 422
+
+    # Huge link_id (exceeding 32-bit int: 9999999999999999999) must return 422, NEVER 500
+    huge_id = 9999999999999999999
+    for ep in [
+        f"/api/analytics/summary?link_id={huge_id}",
+        f"/api/analytics/timeseries?link_id={huge_id}",
+        f"/api/analytics/breakdown?link_id={huge_id}",
+    ]:
+        resp_huge = await async_client.get(ep)
+        assert resp_huge.status_code == 422, f"{ep} returned {resp_huge.status_code} instead of 422"
+
+
+# =========================================================================
+# 11. EXACT BOUNDARY & PERCENT CHANGE ROUNDING TESTS
+# =========================================================================
+
+@pytest.mark.anyio
+async def test_click_exactly_on_range_start_and_previous_boundary(async_client: httpx.AsyncClient, auth_user, db):
+    """
+    Clicks placed exactly on current_start_utc and prev_start_utc boundaries
+    must be counted in their respective periods without loss or double counting.
+    """
+    user, token = auth_user
+    async_client.cookies.set("session_token", token)
+
+    link = Link(user_id=user.id, short_code="boundary1", original_url="https://example.com/b")
+    db.add(link)
+    db.commit()
+
+    bounds = calculate_range_boundaries(range_days=7, tz_name="UTC")
+    cur_start = bounds["current_start_utc"]
+    prev_start = bounds["prev_start_utc"]
+
+    # Click 1: Exactly at current_start_utc
+    db.add(ClickEvent(link_id=link.id, clicked_at=cur_start, referrer=None, device_type="desktop"))
+    # Click 2: Exactly at prev_start_utc
+    db.add(ClickEvent(link_id=link.id, clicked_at=prev_start, referrer=None, device_type="mobile"))
+    db.commit()
+
+    resp = await async_client.get("/api/analytics/summary?range=7&tz=UTC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["current_clicks"] == 1
+    assert data["previous_clicks"] == 1
+    assert data["percent_change"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_percent_change_rounding_cases(async_client: httpx.AsyncClient, auth_user, db):
+    """
+    Verify rounding to 1 decimal place:
+    e.g. 3 previous vs 4 current: (4-3)/3 * 100 = 33.333... -> 33.3%
+    """
+    user, token = auth_user
+    async_client.cookies.set("session_token", token)
+
+    link = Link(user_id=user.id, short_code="roundtest", original_url="https://example.com/r")
+    db.add(link)
+    db.commit()
+
+    now = datetime.now(timezone.utc)
+    # 4 clicks in current period
+    for _ in range(4):
+        db.add(ClickEvent(link_id=link.id, clicked_at=now, referrer=None, device_type="desktop"))
+
+    # 3 clicks in previous period (e.g. 10 days ago for range=7)
+    for _ in range(3):
+        db.add(ClickEvent(link_id=link.id, clicked_at=now - timedelta(days=10), referrer=None, device_type="desktop"))
+    db.commit()
+
+    resp = await async_client.get("/api/analytics/summary?range=7&tz=UTC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["current_clicks"] == 4
+    assert data["previous_clicks"] == 3
+    assert data["percent_change"] == 33.3
+

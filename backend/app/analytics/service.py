@@ -121,14 +121,14 @@ def validate_tz(tz_name: str) -> zoneinfo.ZoneInfo:
     """Validate IANA timezone name. Returns ZoneInfo or raises 422."""
     if not tz_name or not isinstance(tz_name, str):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Timezone must be a non-empty string",
         )
     try:
         return zoneinfo.ZoneInfo(tz_name.strip())
     except Exception:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid or unrecognized IANA timezone: '{tz_name}'",
         )
 
@@ -146,7 +146,7 @@ def calculate_range_boundaries(
     """
     if range_days not in (7, 30, 90):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid range: {range_days}. Allowed values are 7, 30, or 90.",
         )
 
@@ -208,6 +208,11 @@ def build_binary_case(ranges: List[Tuple[datetime.date, datetime, datetime]]) ->
 
 def verify_link_ownership(db: Session, user_id: uuid.UUID, link_id: int) -> Link:
     """Ensure link exists, belongs to user, and is not soft-deleted."""
+    if not isinstance(link_id, int) or link_id < 1 or link_id > 2147483647:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid link_id: {link_id}",
+        )
     link = db.execute(
         select(Link).where(
             Link.id == link_id,
@@ -379,7 +384,7 @@ def get_analytics_top_links(
 ) -> Dict[str, Any]:
     if limit < 1 or limit > 50:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Limit must be between 1 and 50",
         )
 
@@ -440,86 +445,67 @@ def get_analytics_breakdown(
     cur_start = bounds["current_start_utc"]
     cur_end = bounds["current_end_utc"]
 
-    # 1. Referrers aggregation: strip http:// and https:// and trailing slashes
+    # Referrers & Devices aggregated in a single database pass via GROUPING SETS
     if link_id is not None:
         verify_link_ownership(db, user_id, link_id)
-        ref_stmt = text("""
+        stmt = text("""
             SELECT
-              CASE
-                WHEN c.referrer IS NULL OR trim(c.referrer) = '' THEN 'Direct'
-                ELSE split_part(regexp_replace(c.referrer, '^https?://', '', 'i'), '/', 1)
-              END AS host_ref,
-              count(c.id) AS click_count
-            FROM click_events c
-            WHERE c.link_id = :link_id
-              AND c.clicked_at >= :cur_start
-              AND c.clicked_at <= :cur_end
-            GROUP BY 1
-            ORDER BY click_count DESC, host_ref ASC;
+              grouping(host_ref) AS grp_host,
+              grouping(dev_type) AS grp_dev,
+              host_ref,
+              dev_type,
+              count(*) AS click_count
+            FROM (
+              SELECT
+                CASE
+                  WHEN c.referrer IS NULL OR trim(c.referrer) = '' THEN 'Direct'
+                  ELSE split_part(regexp_replace(c.referrer, '^https?://', '', 'i'), '/', 1)
+                END AS host_ref,
+                coalesce(c.device_type, 'unknown') AS dev_type
+              FROM click_events c
+              WHERE c.link_id = :link_id
+                AND c.clicked_at >= :cur_start
+                AND c.clicked_at <= :cur_end
+            ) sub
+            GROUP BY GROUPING SETS ((host_ref), (dev_type));
         """)
-        ref_rows = db.execute(ref_stmt, {
-            "link_id": link_id,
-            "cur_start": cur_start,
-            "cur_end": cur_end,
-        }).all()
-
-        dev_stmt = text("""
-            SELECT
-              coalesce(c.device_type, 'unknown') AS device_type,
-              count(c.id) AS click_count
-            FROM click_events c
-            WHERE c.link_id = :link_id
-              AND c.clicked_at >= :cur_start
-              AND c.clicked_at <= :cur_end
-            GROUP BY 1
-            ORDER BY click_count DESC, device_type ASC;
-        """)
-        dev_rows = db.execute(dev_stmt, {
+        rows = db.execute(stmt, {
             "link_id": link_id,
             "cur_start": cur_start,
             "cur_end": cur_end,
         }).all()
     else:
-        ref_stmt = text("""
+        stmt = text("""
             SELECT
-              CASE
-                WHEN c.referrer IS NULL OR trim(c.referrer) = '' THEN 'Direct'
-                ELSE split_part(regexp_replace(c.referrer, '^https?://', '', 'i'), '/', 1)
-              END AS host_ref,
-              count(c.id) AS click_count
-            FROM click_events c
-            JOIN links l ON c.link_id = l.id
-            WHERE l.user_id = :user_id
-              AND l.deleted_at IS NULL
-              AND c.clicked_at >= :cur_start
-              AND c.clicked_at <= :cur_end
-            GROUP BY 1
-            ORDER BY click_count DESC, host_ref ASC;
+              grouping(host_ref) AS grp_host,
+              grouping(dev_type) AS grp_dev,
+              host_ref,
+              dev_type,
+              count(*) AS click_count
+            FROM (
+              SELECT
+                CASE
+                  WHEN c.referrer IS NULL OR trim(c.referrer) = '' THEN 'Direct'
+                  ELSE split_part(regexp_replace(c.referrer, '^https?://', '', 'i'), '/', 1)
+                END AS host_ref,
+                coalesce(c.device_type, 'unknown') AS dev_type
+              FROM click_events c
+              JOIN links l ON c.link_id = l.id
+              WHERE l.user_id = :user_id
+                AND l.deleted_at IS NULL
+                AND c.clicked_at >= :cur_start
+                AND c.clicked_at <= :cur_end
+            ) sub
+            GROUP BY GROUPING SETS ((host_ref), (dev_type));
         """)
-        ref_rows = db.execute(ref_stmt, {
+        rows = db.execute(stmt, {
             "user_id": user_id,
             "cur_start": cur_start,
             "cur_end": cur_end,
         }).all()
 
-        dev_stmt = text("""
-            SELECT
-              coalesce(c.device_type, 'unknown') AS device_type,
-              count(c.id) AS click_count
-            FROM click_events c
-            JOIN links l ON c.link_id = l.id
-            WHERE l.user_id = :user_id
-              AND l.deleted_at IS NULL
-              AND c.clicked_at >= :cur_start
-              AND c.clicked_at <= :cur_end
-            GROUP BY 1
-            ORDER BY click_count DESC, device_type ASC;
-        """)
-        dev_rows = db.execute(dev_stmt, {
-            "user_id": user_id,
-            "cur_start": cur_start,
-            "cur_end": cur_end,
-        }).all()
+    ref_rows = [r for r in rows if r.grp_host == 0]
+    dev_rows = [r for r in rows if r.grp_dev == 0]
 
     total_clicks = sum(int(r.click_count) for r in ref_rows)
 
@@ -561,7 +547,7 @@ def get_analytics_breakdown(
         cnt = int(r.click_count)
         pct = round((cnt / total_clicks) * 100.0, 1) if total_clicks > 0 else 0.0
         devices_list.append({
-            "name": r.device_type,
+            "name": r.dev_type,
             "click_count": cnt,
             "percentage": pct,
         })

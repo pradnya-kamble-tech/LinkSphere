@@ -1,0 +1,62 @@
+{
+  "typ_1w_summary": {
+    "endpoint": "/api/analytics/summary?range=30&tz=UTC",
+    "workers": 1,
+    "total_requests": 496,
+    "rps": 32.7,
+    "p50_ms": 249.08,
+    "p95_ms": 7149.96,
+    "p99_ms": 11893.18,
+    "status_codes": {
+      "200": 496
+    }
+  },
+  "typ_1w_breakdown": {
+    "endpoint": "/api/analytics/breakdown?range=30&tz=UTC",
+    "workers": 1,
+    "total_requests": 413,
+    "rps": 27.0,
+    "p50_ms": 344.18,
+    "p95_ms": 7277.58,
+    "p99_ms": 11277.29,
+    "status_codes": {
+      "200": 413
+    }
+  },
+  "heavy_1w_breakdown_opt": {
+    "endpoint": "/api/analytics/breakdown?range=30&tz=UTC",
+    "workers": 1,
+    "total_requests": 127,
+    "rps": 8.0,
+    "p50_ms": 1375.64,
+    "p95_ms": 11443.97,
+    "p99_ms": 12685.11,
+    "status_codes": {
+      "200": 127
+    }
+  },
+  "heavy_4w_summary": {
+    "endpoint": "/api/analytics/summary?range=30&tz=UTC",
+    "workers": 4,
+    "total_requests": 301,
+    "rps": 19.8,
+    "p50_ms": 340.82,
+    "p95_ms": 9622.77,
+    "p99_ms": 12258.93,
+    "status_codes": {
+      "200": 301
+    }
+  },
+  "heavy_4w_breakdown": {
+    "endpoint": "/api/analytics/breakdown?range=30&tz=UTC",
+    "workers": 4,
+    "total_requests": 93,
+    "rps": 5.9,
+    "p50_ms": 2166.22,
+    "p95_ms": 12559.15,
+    "p99_ms": 13906.71,
+    "status_codes": {
+      "200": 93
+    }
+  }
+}

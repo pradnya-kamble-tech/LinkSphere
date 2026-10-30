@@ -25,7 +25,7 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 def analytics_summary_endpoint(
     range: int = Query(default=30, description="Range in days: 7, 30, or 90"),
     tz: str = Query(default="UTC", description="IANA timezone name"),
-    link_id: Optional[int] = Query(default=None, description="Optional link filter"),
+    link_id: Optional[int] = Query(default=None, ge=1, le=2147483647, description="Optional link filter"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -46,7 +46,7 @@ def analytics_summary_endpoint(
 def analytics_timeseries_endpoint(
     range: int = Query(default=30, description="Range in days: 7, 30, or 90"),
     tz: str = Query(default="UTC", description="IANA timezone name"),
-    link_id: Optional[int] = Query(default=None, description="Optional link filter"),
+    link_id: Optional[int] = Query(default=None, ge=1, le=2147483647, description="Optional link filter"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -86,7 +86,7 @@ def analytics_top_links_endpoint(
 def analytics_breakdown_endpoint(
     range: int = Query(default=30, description="Range in days: 7, 30, or 90"),
     tz: str = Query(default="UTC", description="IANA timezone name"),
-    link_id: Optional[int] = Query(default=None, description="Optional link filter"),
+    link_id: Optional[int] = Query(default=None, ge=1, le=2147483647, description="Optional link filter"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

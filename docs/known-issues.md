@@ -22,6 +22,10 @@
 * **Observation**: In a multi-tenant dataset (1,000,000 total click_events), querying analytics across 1,000 links for a single power user (~100,000 clicks) takes ~55–165 ms via Parallel Seq Scan. Single-link queries execute in sub-millisecond time (< 0.2 ms) via index-only scans on `(link_id, clicked_at)`, and typical users (20 links) execute in ~30 ms via nested loop index scans. Adding an index on `(clicked_at)` does not improve this plan because a 30-day window touches >20% of the table.
 * **Architecture Decision**: No new index added to `click_events` to preserve fast 302 redirect write throughput. If an individual account reaches millions of clicks, introduce a daily rollup table (e.g. `daily_link_metrics` with `(link_id, date, click_count)` updated via periodic background aggregation or continuous materialized view).
 
+### Issue 4: Analytics Rate Limiting (60 requests/minute per user)
+* **Requirement**: Analytics endpoints (`/api/analytics/summary`, `/timeseries`, `/top-links`, `/breakdown`) should enforce a rate limit of 60 requests/minute per user.
+* **Architecture Decision**: Recorded as an architectural requirement for Phase 7 / gateway deployment: rate limiting at 60 req/min per user prevents database threadpool and CPU saturation on heavy multi-link aggregation queries.
+
 ---
 
 ## 2. Phase 3 Performance Regression Baseline

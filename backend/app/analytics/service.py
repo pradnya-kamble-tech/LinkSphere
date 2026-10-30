@@ -208,7 +208,7 @@ def build_binary_case(ranges: List[Tuple[datetime.date, datetime, datetime]]) ->
 
 def verify_link_ownership(db: Session, user_id: uuid.UUID, link_id: int) -> Link:
     """Ensure link exists, belongs to user, and is not soft-deleted."""
-    if not isinstance(link_id, int) or link_id < 1 or link_id > 2147483647:
+    if not isinstance(link_id, int) or link_id < 1 or link_id > 9223372036854775807:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid link_id: {link_id}",

@@ -26,6 +26,27 @@
 * **Requirement**: Analytics endpoints (`/api/analytics/summary`, `/timeseries`, `/top-links`, `/breakdown`) should enforce a rate limit of 60 requests/minute per user.
 * **Architecture Decision**: Recorded as an architectural requirement for Phase 7 / gateway deployment: rate limiting at 60 req/min per user prevents database threadpool and CPU saturation on heavy multi-link aggregation queries.
 
+### Issue 5: Multi-Worker vs Single-Worker Throughput Discrepancy
+* **Observation**: Running across 4 distributed uvicorn workers did not improve throughput or latency over a single worker:
+  * Redirect endpoint: 1 worker achieved **76.5 req/s** (p95 1,817 ms), whereas 4 workers achieved **63.8 req/s** (p95 1,825 ms).
+  * Breakdown endpoint: 1 worker achieved **8.0 req/s** (p95 11.4 s), whereas 4 workers achieved **5.9 req/s** (p95 12.6 s).
+* **Cause**: **UNKNOWN**.
+* **Deployment Context Note**: All load numbers originate from a single Windows laptop concurrently executing the load generator client, FastAPI/uvicorn server(s), and Docker Engine running PostgreSQL 16. These measurements reflect local resource contention and are **not a capacity statement**; all benchmarks must be re-measured on the production deployment host.
+
+### Issue 6: Typical-User Under-Load Tail Latency
+* **Observation**: Under 50 concurrent users, `GET /api/analytics/summary` for a typical user (20 links, 2,000 clicks) recorded a p95 latency of ~4.5–7.1 s on a 1M-row dataset.
+* **Investigation**: Pure query execution time is 19.9–30.8 ms. The p95 measured right after seeding 1M rows remained > 1 s even after manual `ANALYZE` and waiting for PostgreSQL autovacuum/analyze workers to be completely idle (p50: 1,336 ms, p95: 4,540 ms). Queuing across the threadpool under 50 simultaneous concurrent requests against a single shared CPU and disk on Windows accounts for the queue buildup. This is **not a capacity statement**.
+
+### Issue 7: CASE Bucketing vs AT TIME ZONE Tradeoff
+* **Observation**: In the 1,000,000-row dataset:
+  * For a typical 20-link user, Python-computed binary search CASE bucketing is **22.8% faster** than `AT TIME ZONE` (30.8 ms vs 39.9 ms).
+  * For a 1,000-link user across a 30-day window, CASE bucketing is **131.7% slower** than `AT TIME ZONE` (304.3 ms vs 131.3 ms).
+* **Architecture Decision**: Python-computed CASE bucketing is intentionally retained in the codebase for safety and simplicity: it ensures Postgres never parses user-supplied timezone names (preventing 500 errors and SQL injection), while keeping typical account performance fast. High-volume enterprise accounts will be handled by the daily rollup table.
+
+### Issue 8: Breakdown Query Optimization vs Concurrency Behavior
+* **Observation**: Unifying the two breakdown aggregations (referrers and device types) into a single SQL pass using `GROUP BY GROUPING SETS ((host_ref), (dev_type))` successfully halved the standalone database execution time from **121.7 ms to 61.4 ms**.
+* **Load Test Behavior**: However, under 50 concurrent users on the heavy user, observed throughput shifted from 13.3 req/s (p95 4,498 ms) to 8.0 req/s (p95 11,444 ms). Thus, the only measured improvement from `GROUPING SETS` is in standalone query execution time, not under sustained single-host concurrent load. This is **not a capacity statement**.
+
 ---
 
 ## 2. Phase 3 Performance Regression Baseline

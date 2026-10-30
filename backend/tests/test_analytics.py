@@ -388,7 +388,7 @@ async def test_analytics_invalid_inputs_and_adversarial(async_client: httpx.Asyn
         resp = await async_client.get(f"/api/analytics/top-links?limit={bad_limit}")
         assert resp.status_code == 422
 
-    # Huge link_id (exceeding 32-bit int: 9999999999999999999) must return 422, NEVER 500
+    # Huge link_id (exceeding int64 max 9223372036854775807: 9999999999999999999) must return 422, NEVER 500
     huge_id = 9999999999999999999
     for ep in [
         f"/api/analytics/summary?link_id={huge_id}",
@@ -397,6 +397,16 @@ async def test_analytics_invalid_inputs_and_adversarial(async_client: httpx.Asyn
     ]:
         resp_huge = await async_client.get(ep)
         assert resp_huge.status_code == 422, f"{ep} returned {resp_huge.status_code} instead of 422"
+
+    # Valid large int64 link_id (9223372036854775807) that does not exist must return 404, not 422 or 500
+    valid_large_id = 9223372036854775807
+    for ep in [
+        f"/api/analytics/summary?link_id={valid_large_id}",
+        f"/api/analytics/timeseries?link_id={valid_large_id}",
+        f"/api/analytics/breakdown?link_id={valid_large_id}",
+    ]:
+        resp_valid_large = await async_client.get(ep)
+        assert resp_valid_large.status_code == 404, f"{ep} returned {resp_valid_large.status_code} instead of 404"
 
 
 # =========================================================================

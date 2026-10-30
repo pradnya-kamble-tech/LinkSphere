@@ -125,6 +125,29 @@ def create_user_session(db: DBSession, user_id: uuid.UUID) -> Tuple[str, Session
     return raw_token, session
 
 
+def is_session_active(session: Session, now: Optional[datetime] = None) -> bool:
+    """
+    Shared definition of an ACTIVE session:
+    - Not revoked (revoked_at is None)
+    - Not expired (expires_at > now)
+    - Not past the idle timeout (now - last_seen_at <= SESSION_IDLE_TIMEOUT_HOURS)
+    """
+    if not session or session.revoked_at is not None:
+        return False
+
+    current_time = now or datetime.now(timezone.utc)
+
+    if session.expires_at <= current_time:
+        return False
+
+    if session.last_seen_at and (
+        current_time - session.last_seen_at > timedelta(hours=settings.SESSION_IDLE_TIMEOUT_HOURS)
+    ):
+        return False
+
+    return True
+
+
 def get_valid_session(db: DBSession, raw_token: Optional[str]) -> Optional[Tuple[Session, User]]:
     """Validate raw token against stored token_hash. Updates last_seen_at if older than 5 minutes."""
     if not raw_token:
@@ -133,21 +156,14 @@ def get_valid_session(db: DBSession, raw_token: Optional[str]) -> Optional[Tuple
     token_hash = hash_session_token(raw_token)
     session = (
         db.query(Session)
-        .filter(Session.token_hash == token_hash, Session.revoked_at.is_(None))
+        .filter(Session.token_hash == token_hash)
         .first()
     )
     if not session:
         return None
 
     now = datetime.now(timezone.utc)
-
-    # Expiry checks
-    if session.expires_at <= now:
-        return None
-
-    if session.last_seen_at and (
-        now - session.last_seen_at > timedelta(hours=settings.SESSION_IDLE_TIMEOUT_HOURS)
-    ):
+    if not is_session_active(session, now):
         return None
 
     # Amendment 5: Update last_seen_at only if stored value is older than 5 minutes

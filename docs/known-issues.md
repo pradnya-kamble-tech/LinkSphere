@@ -47,6 +47,14 @@
 * **Observation**: Unifying the two breakdown aggregations (referrers and device types) into a single SQL pass using `GROUP BY GROUPING SETS ((host_ref), (dev_type))` successfully halved the standalone database execution time from **121.7 ms to 61.4 ms**.
 * **Load Test Behavior**: However, under 50 concurrent users on the heavy user, observed throughput shifted from 13.3 req/s (p95 4,498 ms) to 8.0 req/s (p95 11,444 ms). Thus, the only measured improvement from `GROUPING SETS` is in standalone query execution time, not under sustained single-host concurrent load. This is **not a capacity statement**.
 
+### Issue 9: Account Deletion Architecture Decision (Option A)
+* **Decided Design**: When account deletion is implemented in a future level, it must follow Option A: anonymize the user record (`name = "Deleted User"`, `email = "deleted_<uuid>@anonymized.local"`, `avatar_url = None`), revoke all sessions and OAuth identities, and keep links as soft-deleted (`deleted_at = now()`, `is_active = False`) so that short codes stay reserved forever.
+* **Database Constraint Migration Note**: A future migration should switch `links.user_id` foreign key constraint to `ON DELETE RESTRICT` (instead of `CASCADE`) and update `test_user_delete_cascade` accordingly to prevent accidental hard deletion of links and release of reserved codes.
+
+### Issue 10: Settings Endpoints Rate Limiting (30 requests/minute per user)
+* **Requirement**: Level 7 settings and session management endpoints (`/api/me/identities`, `/api/me/sessions`, `/api/auth/logout-all`, `DELETE /api/me/sessions/{id}`) should enforce a rate limit of 30 requests/minute per user at the API gateway / proxy layer.
+* **Architecture Decision**: Recorded as an architectural requirement for Level 4.5 gateway configuration to prevent abuse of session listing and mass revocation endpoints.
+
 ---
 
 ## 2. Phase 3 Performance Regression Baseline

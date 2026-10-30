@@ -4,6 +4,7 @@ import { Login } from './pages/Login'
 import { Signup } from './pages/Signup'
 import { Dashboard } from './pages/Dashboard'
 import { Analytics } from './pages/Analytics'
+import { Settings } from './pages/Settings'
 
 export function App() {
   return (
@@ -14,6 +15,7 @@ export function App() {
         <Route path="/signup" element={<Signup />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/analytics" element={<Analytics />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

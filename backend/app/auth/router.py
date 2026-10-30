@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, Request, Response, HTTPException, status
 from fastapi.responses import RedirectResponse, JSONResponse
@@ -13,7 +14,8 @@ from app.core.security import (
     create_signed_oauth_state,
     verify_signed_oauth_state,
 )
-from app.auth.dependencies import verify_csrf_origin
+from app.auth.dependencies import verify_csrf_origin, get_current_session_and_user
+from app.auth.models import Session as SessionModel
 from app.auth.oauth import (
     generate_pkce_pair,
     get_google_auth_url,
@@ -203,5 +205,29 @@ def logout(
         revoke_session(db, raw_token)
 
     response = JSONResponse(content={"status": "logged_out"})
+    response.delete_cookie(key="session_token", path="/")
+    return response
+
+
+@router.post("/logout-all")
+def logout_all(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_session_and_user: tuple = Depends(get_current_session_and_user),
+    _csrf: None = Depends(verify_csrf_origin),
+):
+    """
+    Revoke all active sessions for current user (sets revoked_at).
+    Clears session cookie. Enforces CSRF Origin check.
+    """
+    _, user = current_session_and_user
+    now = datetime.now(timezone.utc)
+    db.query(SessionModel).filter(
+        SessionModel.user_id == user.id,
+        SessionModel.revoked_at.is_(None),
+    ).update({"revoked_at": now})
+    db.commit()
+
+    response = JSONResponse(content={"status": "logged_out_everywhere"})
     response.delete_cookie(key="session_token", path="/")
     return response

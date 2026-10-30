@@ -47,6 +47,68 @@ export async function logoutUser(): Promise<void> {
   }
 }
 
+export async function logoutAllUser(): Promise<void> {
+  const resp = await fetch('/api/auth/logout-all', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Origin': window.location.origin,
+    },
+  })
+  if (!resp.ok && resp.status !== 401) {
+    throw new Error(`Logout all failed: HTTP ${resp.status}`)
+  }
+}
+
+export interface UserIdentity {
+  provider: string
+  email_verified: boolean
+  created_at: string | null
+}
+
+export interface UserSession {
+  id: string
+  created_at: string | null
+  expires_at: string | null
+  last_seen_at: string | null
+  is_current: boolean
+}
+
+export async function fetchIdentities(): Promise<UserIdentity[]> {
+  const resp = await fetch('/api/me/identities', {
+    credentials: 'include',
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch identities: HTTP ${resp.status}`)
+  }
+  return resp.json()
+}
+
+export async function fetchSessions(): Promise<UserSession[]> {
+  const resp = await fetch('/api/me/sessions', {
+    credentials: 'include',
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch sessions: HTTP ${resp.status}`)
+  }
+  return resp.json()
+}
+
+export async function revokeSession(sessionId: string): Promise<void> {
+  const resp = await fetch(`/api/me/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: {
+      'Origin': window.location.origin,
+    },
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    const msg = typeof err.detail === 'string' ? err.detail : null
+    throw new Error(msg || `Failed to revoke session: HTTP ${resp.status}`)
+  }
+}
+
 export interface LinkItem {
   id: number
   short_code: string

@@ -1,0 +1,12 @@
+{
+  "endpoint": "/api/me/sessions",
+  "total_requests": 235,
+  "rps": 21.7,
+  "p50_ms": 1797.85,
+  "p95_ms": 5229.38,
+  "p99_ms": 8189.78,
+  "status_codes": {
+    "200": 235,
+    "err_RemoteProtocolError": 1
+  }
+}

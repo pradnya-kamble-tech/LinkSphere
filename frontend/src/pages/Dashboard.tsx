@@ -186,6 +186,13 @@ export function Dashboard() {
           >
             Analytics
           </Link>
+          <Link
+            to="/settings"
+            className="btn btn-secondary"
+            style={{ padding: '0.4rem 0.8rem', textDecoration: 'none' }}
+          >
+            Settings
+          </Link>
           <button
             onClick={handleSignOut}
             disabled={loggingOut}

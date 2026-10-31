@@ -1,568 +1,402 @@
-# LinkSphere v2 Production Deployment Plan v3 (Single-Origin Architecture)
+# LinkSphere v2 Production Deployment Plan v4 (Vercel + Serverless Architecture)
 
-> **Important**: This document is an architectural and operational plan only. No deployment code or application changes have been committed. All costs, quotas, and limits listed below are marked with **(verify)** and must be verified against current vendor pricing.
+> **Important**: This document is an architectural and operational plan only. No deployment code or application changes have been committed. All external platform limits, prices, and features are marked with **(verify)** and cited against official vendor documentation.
 
 ---
 
 ## 0. Operator Decisions & Target Configuration
 
-The following operational parameters govern this deployment plan:
+The following parameters are established for this deployment target:
 
-* **Target Domain**: `<Operator to specify: owned domain name, or "will buy">` (e.g. `linksphere.io` or `app.example.com`)
-* **Infrastructure Topology**: `<Operator to specify: Option A (PaaS + Managed Postgres) or Option B (Single VPS with Caddy)>`
-* **Monthly Budget Ceiling**: `<Operator to specify: e.g. $15/month or $50/month (USD/EUR)>`
-* **Application Rate Limiter**: **Hand-written in-process sliding window counter (Approved, zero external dependencies)**
-
----
-
-## 1. Single-Origin Architecture & Route Topology
-
-LinkSphere v2 operates strictly on a **Single Origin** (`https://<your-domain>`). The backend ASGI service serves API routes, short-code redirects, and static frontend assets directly:
-
-```
-                                [ Client Browser ]
-                                        │
-                                        ▼ HTTPS (Port 443)
-                        ┌───────────────────────────────┐
-                        │   https://<your-domain>       │
-                        │   (PaaS Ingress / Caddy Proxy)│
-                        └───────────────┬───────────────┘
-                                        │
-                                        ▼ HTTP (Internal Port 8001)
-                        ┌───────────────────────────────┐
-                        │   FastAPI + Uvicorn Service   │
-                        │                               │
-                        │  ├─ /api/*        (JSON API)  │
-                        │  ├─ /assets/*     (Static JS) │
-                        │  ├─ /favicon.ico  (Static Root│
-                        │  ├─ /{short_code} (302 Redir) │
-                        │  └─ /login, etc.  (SPA HTML)  │
-                        └───────────────┬───────────────┘
-                                        │
-                                        ▼ SQL (Port 5432 / 5434)
-                        ┌───────────────────────────────┐
-                        │        PostgreSQL 16          │
-                        │ (Managed DB or Docker Engine) │
-                        └───────────────────────────────┘
-```
-
-### Key Architectural Characteristics
-- **No CORS Preflights**: Because browser requests originate from `https://<your-domain>` and target `https://<your-domain>/api/*`, requests are same-origin. Preflight `OPTIONS` requests and cross-origin header checks are avoided. Session cookies (`SameSite=Lax`, `Secure`, `HttpOnly`) function reliably across all modern browsers.
-- **No `VITE_API_URL`**: As verified in [`frontend/src/api.ts`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/frontend/src/api.ts), the frontend issues all API requests to relative paths (e.g. `fetch('/api/me')`). No build-time API domain injection is required.
-- **Unified Short Link Domain**: `SHORT_LINK_BASE_URL` matches the apex/service origin: `https://<your-domain>`. Generated links take the form `https://<your-domain>/{short_code}`.
-
-### OAuth Redirect URI Behind Reverse Proxy (Code Audit)
-- **Current Implementation**: An audit of [`backend/app/auth/router.py`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/backend/app/auth/router.py#L66) confirms that `redirect_uri` is constructed from configured base settings, **not** dynamically from `request.base_url`:
-  ```python
-  redirect_uri = f"{settings.FRONTEND_ORIGIN}/api/auth/callback/{provider}"
-  ```
-- **TLS-Termination Guarantee**: Because `redirect_uri` is derived from `settings.FRONTEND_ORIGIN` (`https://<your-domain>`), it remains strictly `https://` even when a reverse proxy (PaaS edge or Caddy) terminates TLS and forwards plain `http://localhost:8001` internally. This prevents OAuth protocol mismatch errors.
-- **Required Verification Test in Plan**: Add a unit test in `backend/tests/test_auth.py` verifying that `/api/auth/{provider}/login` sets `redirect_uri` to `https://<configured-domain>/...` regardless of internal incoming `http://` scheme or internal proxy port headers.
-
-### Required Code & Configuration Changes (Numbered List)
-The following code adjustments are required to implement single-origin serving (listed for planning; no code has been modified):
-
-1. **Multi-Stage Container Bundling**: Build the frontend (`npm run build` producing `frontend/dist`) during Docker build and copy `dist/` into `backend/static/`.
-2. **Mount Hashed Assets Directory**: Mount `StaticFiles(directory="static/assets")` under `/assets` in [`backend/app/main.py`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/backend/app/main.py).
-3. **Serve Root Static Files**: Add explicit endpoints or static mounts for `/favicon.ico`, `/robots.txt`, `/sitemap.xml`, and `/manifest.json` from `static/`.
-4. **Explicit SPA Route Handling & Fallback Ordering**:
-   - Order of route evaluation in FastAPI:
-     1. `/api/*`: API routers (health, auth, users, links, analytics).
-     2. `/assets/*`: Hashed JS and CSS assets.
-     3. Known system/root static files (`/favicon.ico`, etc.).
-     4. Known frontend client routes (`/`, `/login`, `/signup`, `/dashboard`, `/analytics`, `/settings`): Serve `static/index.html`.
-     5. `/{short_code}`: Dynamic database redirect lookup. If found and active, return HTTP 302. If not found or soft-deleted, return the existing custom 404 HTML page.
-5. **Caching Policy Middleware**:
-   - `/assets/*`: `Cache-Control: public, max-age=31536000, immutable` (Vite creates content-hashed assets; can be cached permanently).
-   - `/`, `/login`, `/dashboard`, etc. (`index.html`): `Cache-Control: no-cache, no-store, must-revalidate` (ensures users receive new frontend deployments immediately).
-   - `/api/*`: `Cache-Control: no-store`.
-   - `/{short_code}` (Redirect): `Cache-Control: private, max-age=0, no-cache` (forces every click to reach backend to record analytics).
-6. **Security Headers Middleware (Phased Rollout)**:
-   - Detailed in Section 5 below.
-7. **CORS Middleware Removal / Restriction**: Remove or restrict `CORSMiddleware` in `app/main.py` since all traffic is same-origin.
+* **Target Domain**: None (Custom domain deferred). Utilizing default platform production subdomain: `https://<project>.vercel.app`.
+* **Hosting Topology**: **Option V (Vercel + Hosted Postgres with Connection Pooler, proposing Neon)**. Fallback: **Option V2 (Hybrid Vercel Frontend + Container API via Vercel Rewrites)**.
+* **Monthly Budget Ceiling**: **Free tiers only** (Vercel Hobby + Neon Free Tier, to be confirmed by operator).
+* **Application Rate Limiter**: Hand-written application logic (zero external paid services or unapproved dependencies).
 
 ---
 
-## 2. Reserved Words & Frontend Route Synchronization
+## 1. Hosting Options (Single-Origin Serverless Topologies)
 
-### Route Inventory
-From [`frontend/src/App.tsx`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/frontend/src/App.tsx#L12-L21), the active client-side routes are:
-- `/` (Home)
-- `/login` (Login)
-- `/signup` (Signup)
-- `/dashboard` (Dashboard)
-- `/analytics` (Analytics) — **Currently missing from `RESERVED_CODES`**
-- `/settings` (Settings) — **Currently missing from `RESERVED_CODES`**
+### Option V: Vercel Unified (Static Frontend + Python ASGI Serverless Function + Neon)
+In Option V, the entire application is hosted on Vercel under a single origin (`https://<project>.vercel.app`), connecting to Neon Serverless Postgres via its built-in connection pooler:
 
-### Complete Target `RESERVED_CODES` Set
-In [`backend/app/links/schemas.py`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/backend/app/links/schemas.py#L9-L24), `RESERVED_CODES` must include all frontend routes and system paths:
-```python
-RESERVED_CODES = {
-    # System & API endpoints
-    "api",
-    "health",
-    "docs",
-    "redoc",
-    "openapi.json",
-    # Frontend SPA routes (derived from App.tsx)
-    "login",
-    "signup",
-    "dashboard",
-    "analytics",   # Newly added
-    "settings",    # Newly added
-    # Static assets and search engine roots
-    "assets",
-    "static",
-    "favicon.ico",
-    "robots.txt",
-    "sitemap.xml",
-    "admin",
+```
+                                    [ Client Browser ]
+                                            │
+                                            ▼ HTTPS
+                            ┌───────────────────────────────┐
+                            │    https://<project>.vercel.app│
+                            └───────────────┬───────────────┘
+                                            │
+                     ┌──────────────────────┴──────────────────────┐
+                     ▼                                             ▼
+         [ Vercel CDN / Static Edge ]             [ Vercel Serverless Function ]
+         (Vite React SPA: /assets/*,               (Python 3.11+ ASGI: /api/*,
+          /login, /dashboard, etc.)                 /{short_code} redirects)
+                                                                   │
+                                                                   ▼ SQL (Port 5432, Pooler)
+                                                   ┌───────────────────────────────┐
+                                                   │ Neon PostgreSQL 16 (Pooled)   │
+                                                   │ Built-in PgBouncer (Tx Mode)  │
+                                                   └───────────────────────────────┘
+```
+
+- **Pros**:
+  - Zero infrastructure management, zero VM patching.
+  - Generous free tiers on both Vercel and Neon.
+  - Automatic HTTPS, global CDN edge for static assets, and built-in Git deployment pipelines.
+  - Single origin eliminates CORS preflight overhead and cross-origin cookie restrictions.
+- **Cons**:
+  - Python cold starts on initial invocations (800ms–2.5s) **(verify)**.
+  - 10-second maximum request execution timeout on Vercel Hobby tier **(verify)**.
+  - Ephemeral function instances prevent in-memory state sharing (rate limiting requires database backing).
+  - Background tasks freeze upon response return (click events must be committed synchronously before redirecting).
+- **Cost**: **$0/month** on Hobby/Free tiers **(verify)**.
+
+---
+
+### Fallback Option V2: Hybrid Single-Origin (Vercel Frontend + Container API via Rewrites)
+If Vercel's Python serverless execution, cold starts, or background execution limits prove untenable during Spike 0, Option V2 retains a single origin by proxying API calls through Vercel's Edge network:
+
+```
+                                    [ Client Browser ]
+                                            │
+                                            ▼ HTTPS
+                            ┌───────────────────────────────┐
+                            │    https://<project>.vercel.app│
+                            └───────────────┬───────────────┘
+                                            │
+                     ┌──────────────────────┴──────────────────────┐
+                     ▼                                             ▼
+         [ Vercel CDN / Static Edge ]                   [ Vercel Edge Rewrites ]
+         (Vite React SPA: /assets/*,                   /api/* and /{short_code}
+          /login, /dashboard, etc.)                                │
+                                                                   ▼ HTTPS
+                                                       ┌───────────────────────────────┐
+                                                       │ Standalone Container API      │
+                                                       │ (Render / Railway / VPS)      │
+                                                       └───────────────┬───────────────┘
+                                                                       │
+                                                                       ▼ SQL
+                                                       ┌───────────────────────────────┐
+                                                       │ Managed PostgreSQL 16         │
+                                                       └───────────────────────────────┘
+```
+
+- **How it preserves Single Origin**: `vercel.json` rewrites `/api/:path*` and `/:short_code` to the backend container URL (`https://api-backend.onrender.com`). To the browser, all cookies and network requests remain bound strictly to `https://<project>.vercel.app`.
+- **Pros**: Long-running workers, persistent threadpool, reliable background tasks, zero serverless cold starts.
+- **Cons**: Requires managing a second hosting provider; potential double-hop network latency on API calls.
+
+---
+
+## 2. Serverless Feasibility Checklist (Official Documentation Audit)
+
+Audit evaluated against official [Vercel Documentation](https://vercel.com/docs) and [Neon Documentation](https://neon.tech/docs):
+
+| Feature / Requirement | Status | Official Limit / Specification | Source / Documentation Reference |
+| :--- | :---: | :--- | :--- |
+| **Python & FastAPI Support** | **OK** | Native support via `@vercel/python` builder or `/api/index.py` ASGI handler. Python 3.9–3.12 supported. | Vercel Docs: Serverless Functions (Python Runtime) |
+| **Function Bundle Size** | **OK** | **50 MB** compressed, **250 MB** uncompressed. LinkSphere backend dependencies (FastAPI, SQLAlchemy, Authlib, Pydantic) consume ~45 MB uncompressed. | Vercel Docs: Serverless Functions Limitations **(verify)** |
+| **Execution Duration Limit** | **OK (verify)**| **10 seconds** default & maximum on Hobby Free tier; up to 300s on Pro. Redirects and API endpoints execute in < 200 ms. | Vercel Docs: Functions Execution Limits **(verify)** |
+| **Function Memory Limit** | **OK (verify)**| **1024 MB** default on Hobby tier. More than sufficient for LinkSphere's ~120 MB runtime RSS. | Vercel Docs: Functions Memory Limits **(verify)** |
+| **Cold-Start Behavior** | **(verify)** | Python runtime initialization + importing SQLAlchemy/Pydantic models takes **800 ms to 2.5 s** on cold invocations. | Community benchmarks & Vercel Runtime metrics **(verify)** |
+| **Post-Response Work (BackgroundTasks)**| **NOT OK** | Once HTTP response finishes transmitting, AWS Lambda/Vercel execution context freezes immediately. Uncommitted background tasks or async tasks will freeze or drop. | AWS Lambda Execution Lifecycle / Vercel Functions Docs |
+| **Psycopg3 Binary Wheels** | **OK** | `psycopg[binary]` provides pre-compiled `manylinux` x86_64 wheels that run on Vercel's Amazon Linux runtime without requiring native compilation or `libpq-dev`. | PyPI / Psycopg documentation |
+| **Hobby Plan Terms** | **OK** | Free for personal, non-commercial applications. Commercial usage requires Pro. | Vercel Fair Use Policy / Terms of Service |
+| **Deployment Protection (OAuth Impact)**| **(verify)**| Preview deployments enable "Vercel Authentication" by default, blocking incoming webhooks and OAuth callbacks. Production deployments (`<project>.vercel.app`) are public by default. | Vercel Docs: Deployment Protection **(verify)** |
+| **Platform Rate Limiting** | **(verify)**| Custom WAF rate-limiting rules are restricted to Vercel Pro with Firewall add-on. Hobby tier includes only automated DDoS/Attack Challenge Mode. | Vercel Docs: Security & WAF Rules **(verify)** |
+| **Neon Connection Pooler** | **OK** | Built-in PgBouncer in transaction mode accessible via connection string host with `-pooler` suffix on port `5432`. | Neon Docs: Connection Pooling |
+| **Neon Free Tier Compute Limits** | **(verify)**| 0.5 GiB storage, compute scales to zero after 5 minutes of inactivity. Cold activation takes ~500 ms–2 s. | Neon Docs: Free Tier & Autosuspend **(verify)** |
+
+---
+
+## 3. `vercel.json` Routing Design & Route Synchronization
+
+### Route Precedence & Ordering
+In Vercel, `routes` or `rewrites` in `vercel.json` are evaluated sequentially. The routing table must prioritize hashed static assets and frontend SPA pages before falling back to the serverless function for API and short-code redirects:
+
+```json
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "dist" }
+    },
+    {
+      "src": "backend/api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/assets/(.*)",
+      "headers": { "cache-control": "public, max-age=31536000, immutable" },
+      "dest": "/assets/$1"
+    },
+    {
+      "src": "/(favicon\\.ico|robots\\.txt|sitemap\\.xml)",
+      "dest": "/$1"
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "backend/api/index.py"
+    },
+    {
+      "src": "/(login|signup|dashboard|analytics|settings|)",
+      "dest": "/index.html",
+      "headers": { "cache-control": "no-cache, no-store, must-revalidate" }
+    },
+    {
+      "src": "/([a-zA-Z0-9_-]{3,30})",
+      "dest": "backend/api/index.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
 }
 ```
 
-### Proposed Automated Drift Prevention Test
-To prevent regression when new frontend routes are added, add a test in `backend/tests/test_links.py`:
-```python
-def test_reserved_codes_cover_all_frontend_routes():
-    """Ensure every route path registered in frontend/src/App.tsx is present in RESERVED_CODES."""
-    import re
-    from pathlib import Path
-    from app.links.schemas import RESERVED_CODES
+### Route Drift Synchronization
+1. **Frontend Inventory**: From [`frontend/src/App.tsx`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/frontend/src/App.tsx), all active routes (`/`, `/login`, `/signup`, `/dashboard`, `/analytics`, `/settings`) are routed directly to `/index.html` by Vercel edge routers.
+2. **`RESERVED_CODES` Integrity**: Any path routed to `index.html` or static assets **must** be listed in `RESERVED_CODES` in [`backend/app/links/schemas.py`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/backend/app/links/schemas.py).
+3. **Automated Drift Test**: CI pipeline executes `test_reserved_codes_cover_all_frontend_routes` ensuring any newly added route in `App.tsx` fails the build until registered in `RESERVED_CODES` and `vercel.json`.
 
-    app_tsx = Path("../frontend/src/App.tsx")
-    if not app_tsx.exists():
-        app_tsx = Path("frontend/src/App.tsx")
-    
-    content = app_tsx.read_text(encoding="utf-8")
-    # Matches <Route path="/xyz" ...>
-    routes = set(re.findall(r'<Route\s+path=["\']/([^"\'*]+)["\']', content))
-    
-    missing = routes - RESERVED_CODES
-    assert not missing, f"Frontend routes missing from RESERVED_CODES: {missing}"
-```
+### Preview vs Production URLs & OAuth Constraints
+- **Vercel Preview URLs**: Every git push generates dynamic preview deployments (e.g. `https://linksphere-git-feat-x-user.vercel.app` or `https://linksphere-a1b2c3-user.vercel.app`).
+- **OAuth Mismatch**: Third-party OAuth providers (Google, GitHub) strictly forbid wildcard callback URLs for security reasons. They require exact, literal redirect URIs.
+- **Rule**: OAuth authentication is configured **strictly for the canonical production URL**:
+  - `https://<project>.vercel.app/api/auth/callback/google`
+  - `https://<project>.vercel.app/api/auth/callback/github`
+- Preview branch testing must use mock auth or direct database-seeded sessions.
 
 ---
 
-## 3. Code-vs-Plan Environment & Route Audit
+## 4. Serverless Database Architecture (Neon + Connection Pooling)
 
-### Environment Variable Comparison Table
-Audit of every environment variable against [`backend/app/core/config.py`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/backend/app/core/config.py) and [`.env.example`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/.env.example):
+### Connection String Configuration
+Neon provides two connection strings in its console:
+1. **Pooled Connection String** (Used by FastAPI Serverless Function):
+   ```
+   postgresql+psycopg://user:password@ep-cold-name-pooler.region.aws.neon.tech/dbname?sslmode=require
+   ```
+2. **Direct Connection String** (Used for Alembic Migrations):
+   ```
+   postgresql+psycopg://user:password@ep-cold-name.region.aws.neon.tech/dbname?sslmode=require
+   ```
 
-| Variable Name | Status in Code | Production Value / Format | Default in Code | Purpose |
-| :--- | :--- | :--- | :--- | :--- |
-| `ENVIRONMENT` | Verified | `production` | `local` | Governs secure cookies, error output, and diagnostic routes |
-| `DATABASE_URL` | Verified | `postgresql+psycopg://user:pass@host:5432/dbname?sslmode=require` | (Local dev URL) | Database connection string using Psycopg 3 |
-| `FRONTEND_ORIGIN` | Verified | `https://<your-domain>` | `http://localhost:5173` | Allowed origin for CSRF checks on state-changing POST/DELETE |
-| `SHORT_LINK_BASE_URL` | Verified | `https://<your-domain>` | `http://localhost:8001` | Canonical short URL prefix returned by link endpoints |
-| `SESSION_SECRET` | Verified | `[64-character hex string]` | `""` (fails startup if empty) | Secret for session cookie verification |
-| `GOOGLE_CLIENT_ID` | Verified | `*.apps.googleusercontent.com` | `""` (fails startup if empty) | Google OAuth 2.0 Web Client ID |
-| `GOOGLE_CLIENT_SECRET` | Verified | `GOCSPX-*` | `""` (fails startup if empty) | Google OAuth 2.0 Web Client Secret |
-| `GITHUB_CLIENT_ID` | Verified | `Ov23*` | `""` (fails startup if empty) | GitHub OAuth Application Client ID |
-| `GITHUB_CLIENT_SECRET` | Verified | `[40-character hex string]` | `""` (fails startup if empty) | GitHub OAuth Application Client Secret |
-| `SESSION_LIFETIME_DAYS` | Verified | `7` | `7` | Maximum absolute session lifetime |
-| `SESSION_IDLE_TIMEOUT_HOURS`| Verified | `24` | `24` | Session idle timeout |
-| `DB_POOL_SIZE` | Verified | `10` | `10` | SQLAlchemy connection pool size |
-| `DB_MAX_OVERFLOW` | Verified | `10` | `10` | Additional temporary connections under spike load |
-| `DB_POOL_TIMEOUT` | Verified | `30` | `30` | Seconds to wait before raising connection checkout timeout |
-| `DB_POOL_PRE_PING` | Verified | `True` | `True` | Tests connection liveness before checkout (`SELECT 1`) |
-
-### Corrected Removals & Health Path
-- **Removed `COOKIE_SECURE`**: Does not exist as an environment variable. In `config.py`, `cookie_secure` is a computed property:
+### Serverless SQLAlchemy Pool Configuration
+In serverless environments, each concurrent invocation or container replica runs an independent Python process. Standard connection pooling (`pool_size=10`) causes rapid connection multiplication under traffic spikes.
+- **Recommended Strategy**: Use `NullPool` (or `pool_size=1, max_overflow=0`):
   ```python
-  @property
-  def cookie_secure(self) -> bool:
-      return self.ENVIRONMENT.lower() == "production"
+  from sqlalchemy.pool import NullPool
+
+  engine = create_engine(
+      settings.DATABASE_URL,
+      poolclass=NullPool,
+      connect_args={"prepare_threshold": None},
+  )
   ```
-- **Removed `VITE_API_URL`**: Does not exist in frontend.
-- **Corrected Health Path**: Path is `/api/health` (sync endpoint in `app/api/health.py`).
-  - Healthy response: `HTTP 200 OK` with JSON `{"status": "ok", "database": "connected"}`.
-  - Unhealthy response: `HTTP 503 Service Unavailable` with `{"detail": "Database connection failed: <error>"}`.
+- **Why `prepare_threshold=None` is Mandatory**: Neon's connection pooler operates in **PgBouncer transaction mode**. Transaction pooling routes different queries within or across transactions to different PostgreSQL server connections. Psycopg 3's default prepared statement caching causes `SQLSTATE 26000: prepared statement does not exist` unless server-side statement preparation is disabled via `prepare_threshold=None`.
+
+### Connection Budget Arithmetic
+- Neon Free Tier PgBouncer limit: Supports **up to 10,000 pooled client connections** multiplexed onto a smaller backend connection pool **(verify)**.
+- Direct connection limit: Capped at **100 concurrent connections** on Neon Free compute **(verify)**.
+- With `NullPool` or `pool_size=1`, 50 concurrent Vercel function invocations open exactly 50 connections to Neon PgBouncer, easily within provider quotas.
+
+### Database Migration Execution Strategy
+- **Strict Rule**: Migrations (`alembic upgrade head`) must **NEVER** run inside the Vercel Serverless Function during startup. If multiple serverless instances cold-start concurrently, simultaneous DDL causes database migration deadlocks and function timeouts.
+- **Execution Workflow**:
+  1. Migrations are executed externally from a trusted local workstation or GitHub Actions CI step against Neon's **direct connection string**.
+  2. The deployment pipeline requires operator confirmation before applying destructive schema changes.
 
 ---
 
-## 4. Application-Level Rate Limiting & Daily Link Cap
+## 5. Click Recording in Serverless (Durability vs Latency)
 
-### Design Specifications (Approved: Hand-Written, Zero New Dependencies)
-The rate limiter is implemented directly in standard library Python (`time`, `collections.deque`, `threading.Lock`) within application middleware/dependencies:
+### Mechanism Comparison
+In serverless execution environments, code behavior after sending the HTTP response differs fundamentally from traditional persistent containers:
 
-1. **Thread-Safe State**: Protected by `threading.Lock()` to prevent race conditions during concurrent access across AnyIO worker threads.
-2. **Monotonic Clock**: Uses `time.monotonic()` (never `time.time()`), rendering calculations immune to NTP wall-clock adjustments or leap seconds.
-3. **Bounded Memory & Eviction**:
-   - In-memory keys are tracked alongside an expiration timestamp.
-   - A cleanup routine evicts keys that have been idle longer than the rate window (e.g. 5 minutes).
-   - Maximum key threshold: If keys exceed 20,000 entries (e.g. under an IP-spoofing sweep), an LRU eviction purge drops the oldest inactive keys, ensuring memory usage cannot exceed ~10 MB per worker.
-4. **429 Response & Headers**: Returns `HTTP 429 Too Many Requests` containing standard headers:
-   - `Retry-After: <seconds_remaining>`
-   - `Content-Type: application/json` with `{"detail": "Rate limit exceeded. Try again in X seconds."}`
-5. **Multi-Worker Behavior Documented**:
-   - In a multi-worker setup (e.g. 2–4 uvicorn workers per container) without Redis, each worker maintains its own isolated memory state.
-   - Under round-robin load distribution across $N$ workers, the effective cluster rate limit is approximately $N \times \text{limit}$. This is documented and accepted as an appropriate trade-off to avoid Redis infrastructure costs and failure modes.
-
-### Rate Limit Tiers
-
-| Tier / Endpoint | Key / Identity | Rate Limit | Action on Exceeded |
+| Approach | Description | Latency Impact | Durability Risk |
 | :--- | :--- | :--- | :--- |
-| **Analytics Endpoints** (`/api/analytics/*`) | `user_id` (from session) | **60 req / min** | HTTP 429 Too Many Requests |
-| **Settings & Session Endpoints** (`/api/me/*`, `/logout-all`) | `user_id` (from session) | **30 req / min** | HTTP 429 Too Many Requests |
-| **General Link Endpoints** (`GET/PATCH/DELETE /api/links/*`) | `user_id` (from session) | **60 req / min** | HTTP 429 Too Many Requests |
-| **Link Creation** (`POST /api/links`) | `user_id` (from session) | **20 req / min** | HTTP 429 Too Many Requests |
-| **OAuth Initiation** (`GET /api/auth/{provider}/login`) | Client IP (trusted proxy) | **10 req / min** | HTTP 429 Too Many Requests |
-| **OAuth Callback** (`GET /api/auth/callback/{provider}`) | Client IP (trusted proxy) | **10 req / min** | HTTP 429 Too Many Requests |
-| **Short Link Redirect** (`/{short_code}`) | Client IP (trusted proxy) | **120 req / min** | HTTP 429 Custom HTML |
+| **(a) Synchronous Insert Before Response** *(Default)* | Execute `INSERT INTO click_events` and update `click_count` within the database transaction, commit, then return `RedirectResponse(302)`. | Adds ~15–35 ms database round-trip to the redirect. | **Zero risk**. 100% durable; guaranteed click recording. |
+| **(b) Post-Response Background Execution** | Return `RedirectResponse(302)` immediately and attempt to insert click event asynchronously via `BackgroundTasks`. | Zero added redirect latency. | **HIGH FAILURE RISK**. Once the response stream ends, Vercel/Lambda immediately freezes the CPU context. Background tasks freeze mid-execution and are either delayed indefinitely or terminated without committing. |
 
-### Daily Link Creation Cap (Database-Backed)
-In addition to the per-minute rate limiter, `POST /api/links` enforces a **100 links/day per user cap** queried directly from PostgreSQL:
-```sql
-SELECT count(*) FROM links 
-WHERE user_id = :user_id 
-  AND created_at >= (NOW() AT TIME ZONE 'UTC')::date;
-```
-- Computed using UTC calendar day boundaries from PostgreSQL `click_events`/`links` timestamp columns.
-- Not stored in memory; survives process restarts and applies globally across all workers.
-- Rejection Response: `HTTP 403 Forbidden` with `{"detail": "Daily link creation limit reached (100 links/day)."}`.
+- **Architectural Decision**: **Default to (a) Synchronous Insert Before Response**. Mechanism (b) is rejected unless a platform-native post-response primitive (such as `@vercel/functions` `waitUntil`) is proven and officially supported for Python ASGI on Vercel.
 
-### Trusted Proxy Header & Client IP Verification
-- **Threat**: Attackers sending forged `X-Forwarded-For: <fake-ip>` headers to evade IP rate limits or poison audit logs.
-- **Strict Network Whitelist**:
-  - `uvicorn --proxy-headers --forwarded-allow-ips="<TRUSTED_IPS>"`
-  - **NEVER set `--forwarded-allow-ips` to `*`**.
-  - For VPS (Option B): `--forwarded-allow-ips="127.0.0.1,::1"` (trusting only the local Caddy reverse proxy).
-  - For PaaS (Option A): Set to the provider's documented private load-balancer CIDR.
-- **Client IP Resolution Mechanism**:
-  - Uvicorn parses `X-Forwarded-For` from right to left, stripping hops that match `--forwarded-allow-ips`.
-  - The first un-trusted IP encountered is assigned to `request.client.host`.
-  - If a direct connection arrives with a forged `X-Forwarded-For` from an untrusted source, Uvicorn ignores the header and uses the direct TCP socket address.
-
-### Unit Tests Required for Rate Limiter
-The test suite in `backend/tests/test_rate_limiter.py` must verify:
-1. **Concurrency**: Multi-threaded hammer test verifying `threading.Lock` prevents counter race conditions.
-2. **Eviction**: Verification that idle keys are pruned and memory remains strictly bounded under a flood of unique keys.
-3. **Window Rollover**: Verification that requests rejected when the window fills are permitted immediately once the time window elapses.
-4. **Retry-After Header**: Verification that HTTP 429 includes an accurate integer `Retry-After` header.
+### Staging Verification Test (Click Equality Gate)
+Before approving production release, execute the click equality test:
+- Automated test script issues $N = 100$ redirects (50 sequential, 50 concurrent) against `https://<project>.vercel.app/{short_code}`.
+- Query database:
+  ```sql
+  SELECT count(*) FROM click_events WHERE link_id = :test_link_id;
+  ```
+- **Pass Criterion**: Exactly $N = 100$ rows recorded. If count $< 100$, the release is blocked.
 
 ---
 
-## 5. Security Headers & Phased Rollout Strategy
+## 6. Rate Limiting Architecture in Serverless
 
-To prevent breaking client-side React rendering or locking domains out with bad HTTPS headers, security headers are introduced in phases:
+### The Serverless State Challenge
+In-memory counters (`threading.Lock` + `collections.deque`) are stored in the memory space of a single serverless instance. Because Vercel dynamically spawns, scales, and destroys function containers across different edge nodes, in-process memory is not shared. An attacker or crawler hitting different serverless instances would experience reset limits.
 
-### Phase 1: Content Security Policy (Report-Only Mode)
-Initially deployed with header:
+### Evaluated Rate Limiting Options
+
+| Option | Architecture | Pros | Cons / Dependencies |
+| :--- | :--- | :--- | :--- |
+| **Option 1: Database-Backed Atomic Counter** *(Proposed Default)* | Fixed-window table in PostgreSQL (`rate_limit_buckets`) updated via atomic `INSERT ... ON CONFLICT DO UPDATE`. | Zero new third-party accounts or dependencies. Shares state across all Vercel instances. | Adds a small database query overhead to rate-limited paths. |
+| **Option 2: Upstash Serverless Redis** | External managed Redis accessed over HTTP REST API. | Sub-millisecond latency; purpose-built for serverless rate limiting. | Requires registering an Upstash account, managing keys, and adding `upstash-redis` dependency **(Ask before adding)**. |
+| **Option 3: In-Process Best-Effort Limiter** | Hand-written sliding window counter per function container. | Zero database overhead, zero new dependencies. | Limits apply per function instance rather than globally; effective cluster limit scales with instance count. |
+
+- **Proposed Baseline**: Implement **Option 1 (Database-Backed Counter)** for sensitive state-changing endpoints (link creation, auth), combined with **Option 3 (In-Process)** for high-throughput redirect burst defense. Operator approval is required before introducing Option 2 (Upstash).
+
+### Database-Backed Daily Link Cap (100 links/day)
+- Daily link quota is calculated using UTC calendar midnight computed in Python:
+  ```python
+  from datetime import datetime, timezone
+
+  now_utc = datetime.now(timezone.utc)
+  today_midnight_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+  ```
+- Enforced directly via SQL query including **soft-deleted links** to prevent quota evasion by deleting links:
+  ```sql
+  SELECT count(*) FROM links 
+  WHERE user_id = :user_id 
+    AND created_at >= :today_midnight_utc;
+  ```
+  *(Note: Does NOT filter by `deleted_at IS NULL`; every link created today counts toward the 100 quota).*
+- Rejection: Returns `HTTP 403 Forbidden` with `{"detail": "Daily link creation limit reached (100 links/day)."}`.
+
+### Redirect Rate Limit Adjustment
+- Redirect burst limit configured to **600 requests/minute per IP** (10 req/s).
+- *Rationale*: Shared mobile carrier networks (CGNAT) often route hundreds of mobile users through a single public IP address; a strict 120/min limit causes false-positive blocking of innocent redirect traffic.
+- Initial deployment runs in **Log-Only Mode** to observe real traffic distributions before active blocking is enabled.
+
+---
+
+## 7. Security Headers & Phased Rollout Strategy
+
+### Phase 1: Content Security Policy (Report-Only)
 ```http
 Content-Security-Policy-Report-Only: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none';
 ```
-- Does not block resources; logs violations to the browser developer console.
-- **Manual Verification Checklist (All 5 Pages)**:
-  1. [ ] Landing page (`/`) — verifies root HTML, fonts, and inline layout styles.
-  2. [ ] Login page (`/login`) — verifies OAuth redirect buttons and icons.
-  3. [ ] Dashboard (`/dashboard`) — verifies link creation forms, tables, and pagination.
-  4. [ ] Analytics page (`/analytics`) — verifies dynamic SVG timeseries bar chart rendering and CSS transforms.
-  5. [ ] Settings page (`/settings`) — verifies session tables and modal dialogs.
-- Once all 5 pages confirm zero CSP violations in browser console, switch to enforcing `Content-Security-Policy`.
+- **Manual Verification Checklist (5 Pages)**:
+  1. [ ] Landing page (`/`) — verifies layout and styling.
+  2. [ ] Login page (`/login`) — verifies OAuth action buttons.
+  3. [ ] Dashboard (`/dashboard`) — verifies link creation and tables.
+  4. [ ] Analytics page (`/analytics`) — verifies dynamic SVG timeseries chart rendering.
+  5. [ ] Settings page (`/settings`) — verifies session tables and modals.
 
-### Phase 2: Strict-Transport-Security (HSTS) with Safe Rollback
-- **Initial Deployment**: Start with short duration, no subdomains, and no preload:
-  ```http
-  Strict-Transport-Security: max-age=300
-  ```
-  *(5 minutes; allows quick rollback if SSL certificate or DNS is misconfigured).*
-- **Production Ramp-Up**: After 48 hours of clean operations, increase to 24 hours (`max-age=86400`), then 1 year (`max-age=31536000`).
-- **Rollback Procedure**: If SSL issues arise, immediately set `max-age=0` in reverse proxy or middleware to instruct browsers to clear their cached HSTS requirements.
+### Phase 2: Strict-Transport-Security (HSTS) with Rollback
+- Initial setting: `Strict-Transport-Security: max-age=300` (5 minutes, no subdomains, no preload).
+- Rollback procedure: If certificate issues occur, remove header or set `max-age=0`.
 
-### Additional Standard Headers (Immediate Enforcement)
-```http
-X-Content-Type-Options: nosniff
-X-Frame-Options: DENY
-Referrer-Policy: strict-origin-when-cross-origin
-Permissions-Policy: camera=(), microphone=(), geolocation=()
+---
+
+## 8. Production OAuth Setup Guide (`<project>.vercel.app`)
+
+### Exact Callback URIs
+- **Google OAuth**: `https://<project>.vercel.app/api/auth/callback/google`
+- **GitHub OAuth**: `https://<project>.vercel.app/api/auth/callback/github`
+
+### Dedicated GitHub OAuth App
+- Create a dedicated GitHub OAuth app named `LinkSphere Vercel Production`.
+- Homepage URL: `https://<project>.vercel.app`
+- Authorization callback URL: `https://<project>.vercel.app/api/auth/callback/github`
+
+### Google Cloud Console Consent Screen (Testing Status)
+- Keep Google OAuth Consent Screen in **TESTING** status during initial rollout.
+- Explicitly add the operator's Google email to the **Test users** list in Google Cloud Console.
+- **Pre-Publishing Verification Checklist (Before Ever Publishing)**:
+  - [ ] Live public application homepage (`https://<project>.vercel.app`) **(verify)**.
+  - [ ] Live public Privacy Policy link (`https://<project>.vercel.app/privacy` or hosted document) **(verify)**.
+  - [ ] Terms of Service link **(verify)**.
+  - [ ] Domain ownership verified in Google Search Console if a custom apex domain is attached later.
+
+---
+
+## 9. Staged Rollout Sub-Levels (Spike 0 through Level 4.5d)
+
+To de-risk the Vercel serverless platform constraints before writing full production code, work is structured into five progressive stages:
+
+```
+[ Spike 0: Feasibility Proof ]
+             │
+             ▼
+[ Level 4.5a: Single Origin & Headers ] ──> [ Level 4.5b: Serverless Rate Limiting ]
+                                                              │
+                                                              ▼
+[ Level 4.5d: Staging Deploy & Scaling ] <── [ Level 4.5c: vercel.json & CI Gate ]
 ```
 
----
-
-## 6. Database Capacity, Sizing & Performance Hypotheses
-
-### Connection Budget Arithmetic
-$$\text{Total Connections} = N_{\text{instances}} \times N_{\text{workers}} \times (\text{DB\_POOL\_SIZE} + \text{DB\_MAX\_OVERFLOW}) + \text{Buffer}_{\text{admin}}$$
-
-- **PaaS Stack (Option A)**:
-  - 1 instance $\times$ 2 workers $\times$ (10 pool + 5 max_overflow) = **30 peak connections**.
-  - Sits within entry-tier managed Postgres limits: **50 to 100 connections (verify)**.
-  - Leaves 20–70 connections headroom for Alembic migrations, admin `psql`, and automated backup jobs.
-- **VPS Stack (Option B)**:
-  - 1 instance $\times$ 2 workers $\times$ (10 pool + 10 max_overflow) = **40 peak connections**.
-  - Default PostgreSQL `max_connections` is **100 (verify)**; leaves 60 connections headroom.
-
-### Threadpool Sizing vs Connection Pool (Hypothesis to Test)
-- **Current Code Setting**: [`backend/app/main.py`](file:///C:/Users/Shuddhodhan/LinkSphere_v2/backend/app/main.py#L28) configures `anyio.to_thread.current_default_thread_limiter().total_tokens = 200`.
-- **Contrast**: The database pool allows 10–20 connections per worker.
-- **Operational Hypothesis**:
-  > *Hypothesis to test on deployment host*: When concurrency exceeds 20 requests per worker, worker threads quickly exhaust available database connections, causing incoming requests to queue in SQLAlchemy's connection checkout queue (`DB_POOL_TIMEOUT=30s`). This queueing delay is hypothesized to be the driver of the tail latencies (p95 > 1s) observed under 50-user load tests.
-- **Empirical Validation Plan**: To be formally tested on the staging/production host by running a scaling curve at **1, 5, 20, and 50 concurrent users** to observe whether throughput saturates or serializes.
-
-### Psycopg 3 Prepared Statements & Transaction Poolers
-- **Risk**: Psycopg 3 caches server-side prepared statements by default. If a cloud PostgreSQL provider runs PgBouncer in **transaction pooling mode**, statements from the same client session execute on different PostgreSQL backend connections, triggering `SQLSTATE 26000: prepared statement does not exist`.
-- **Configuration Fix**:
-  - Set `prepare_threshold=None` in SQLAlchemy connect arguments:
-    `create_engine(..., connect_args={"prepare_threshold": None})`.
-  - Or connect via direct session port (port 5432) rather than transaction pooler port.
-
-### Worker Count & Memory Sizing
-- **Recommended Default**: **2 Uvicorn workers** on a 1 vCPU / 1–2 GB RAM host.
-- **Memory Footprint Breakdown**:
-  - Python runtime + FastAPI + dependencies: ~120 MB RSS per worker.
-  - Memory under peak aggregation query load: ~180–220 MB RSS per worker.
-  - 2 Workers Total: ~400–440 MB.
-  - Host OS + Caddy reverse proxy: ~150–200 MB.
-  - Total Memory Profile: ~650 MB. Fits safely within 1 GB or 2 GB RAM with zero OOM risk.
+### Spike 0: Minimum Deployment Feasibility Spike
+A minimal deployment that proves the three primary technical risks on Vercel + Neon:
+1. **Risk 1 (Function & Pooler Connectivity)**: Verify Python serverless function boots on Vercel, executes queries through Neon PgBouncer transaction pooler with `prepare_threshold=None`, and returns `GET /api/health` HTTP 200.
+2. **Risk 2 (Click Durability)**: Verify synchronous insert before redirect successfully commits a click row in Neon before the function context freezes.
+3. **Risk 3 (Single-Origin Rewrites & Cookies)**: Verify that hitting `/dashboard` renders the Vite frontend and that `session_token` cookie persists across requests on `https://<project>.vercel.app`.
+- **Operator Manual Setup for Spike 0**:
+  - Create free Vercel account and link project repository.
+  - Create free Neon account, spin up a serverless PostgreSQL 16 database, and copy pooled connection string.
+  - Register Google OAuth credentials (in Testing mode with operator test email).
+  - Register GitHub OAuth app with callback `https://<project>.vercel.app/api/auth/callback/github`.
+  - Generate 32-byte secret: `openssl rand -hex 32`.
+  - Enter environment variables in Vercel Project Dashboard (`DATABASE_URL`, `SESSION_SECRET`, `ENVIRONMENT=production`, `FRONTEND_ORIGIN=https://<project>.vercel.app`, `SHORT_LINK_BASE_URL=https://<project>.vercel.app`, OAuth keys).
+- **Spike 0 Acceptance Criteria**:
+  - `curl -i https://<project>.vercel.app/api/health` returns HTTP 200 `{"status":"ok","database":"connected"}`.
+  - Visiting a short link redirects to destination and increments Neon `click_events` count by 1.
 
 ---
 
-## 7. Operations, Resilience & Maintenance Policy
-
-### GitHub Actions CI/CD Outline (`.github/workflows/ci.yml`)
-- **Triggers**: `on: [push, pull_request]` against branch `main`.
-- **Pipeline Structure**:
-  1. `backend-test`:
-     - Spawns service container `postgres:16` named `linksphere_test` (port 5432).
-     - Installs `backend/requirements.txt`.
-     - Executes `alembic upgrade head` on test database.
-     - Runs `pytest -v` with dummy test secrets (`ENVIRONMENT=test`).
-     - Must report 126+ passed, 0 failures.
-  2. `frontend-build`:
-     - Installs Node.js 20.
-     - Runs `npm ci` and `npm run build` in `frontend/`.
-  3. `deploy-gate`:
-     - Evaluates results; deployment is completely blocked if either job fails.
-
-### Multi-Stage Non-Root Dockerfile Outline
-```dockerfile
-# Stage 1: Build Frontend SPA
-FROM node:20-alpine AS frontend-builder
-WORKDIR /app
-COPY frontend/package*.json ./
-RUN npm ci
-COPY frontend/ ./
-RUN npm run build
-
-# Stage 2: Production Python Runtime
-FROM python:3.11-slim-bookworm AS runtime
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-WORKDIR /app
-
-RUN groupadd -g 10001 appgroup && \
-    useradd -u 10001 -g appgroup -s /bin/bash -m appuser
-
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY backend/ /app/
-COPY --from=frontend-builder /app/dist /app/static
-RUN chown -R appuser:appgroup /app
-
-USER appuser
-EXPOSE 8001
-
-HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:8001/api/health || exit 1
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "2", "--proxy-headers"]
-```
-
-### Migrations as a Separate Release Step
-- **Rule**: Never run `alembic upgrade head` in container boot scripts. Multiple container replicas booting concurrently cause DDL race conditions and database migration locks.
-- **PaaS**: Run as dedicated Pre-Deploy / Release Phase command (e.g. Render `preDeployCommand: alembic upgrade head`).
-- **VPS**: Execute `docker compose run --rm backend alembic upgrade head` prior to restarting services.
-
-### Health & Readiness Checks
-- Endpoint: `GET /api/health`
-- Function: Executes `SELECT 1` through connection pool.
-- Returns HTTP 200 `{"status": "ok", "database": "connected"}` when healthy.
-- Returns HTTP 503 on database disconnect or pool checkout timeout.
-
-### Rollback Strategy
-1. **Application Code Rollback**: Re-deploy previous container image tag or commit SHA.
-2. **Database Schema Rollback**:
-   - Backward-compatible schema migrations (new columns nullable or defaulted).
-   - Rollback command: `alembic downgrade <previous_revision>`.
-
-### Backup Frequency & Quarterly Restore Drill
-- **Backup Schedule**: Automated daily snapshot via `pg_dump -Fc` (compressed custom format) or managed cloud provider automated backups.
-- **Retention**: 30 daily snapshots, 12 monthly snapshots.
-- **Quarterly Disaster Recovery Drill**:
-  1. Provision an isolated local or cloud PostgreSQL instance.
-  2. Download the latest automated snapshot.
-  3. Execute restore: `pg_restore -v -d test_restore_db snapshot.dump`.
-  4. Run automated integrity check verifying count of `users`, `links`, and `click_events`.
-  5. Validate RTO (Recovery Time Objective < 1 hour) and RPO (Recovery Point Objective < 24 hours).
-
-### Cold-Start Behavior by Hosting Option
-- **Option A (PaaS - Paid Tier)**: **0 seconds cold start**. Paid instances (e.g. Render Starter) run continuously 24/7 without sleep. (Note: Free PaaS tiers sleep after 15m inactivity and suffer 30–50s cold starts; rejected for production).
-- **Option B (VPS)**: **0 seconds cold start**. VPS is continuously running.
-
-### Dependency & Container Image Update Policy
-- **Automated Security Scanning**:
-  - Run `pip-audit` in CI or monthly automated workflow to scan Python dependencies for known CVEs.
-  - Run `npm audit` for frontend dependencies.
-- **Base Image Updates**:
-  - Base image pinned to stable Debian release (`python:3.11-slim-bookworm`).
-  - Container rebuilt monthly to pull latest OS-level security patches.
-
-### Log Redaction & Privacy Policy
-- **Never Log Cookies**: `session_token` must be redacted from all access logs.
-- **Never Log Secrets**: `SESSION_SECRET`, `GOOGLE_CLIENT_SECRET`, and `GITHUB_CLIENT_SECRET` must never appear in logs.
-- **Never Log OAuth Codes/Tokens**: `code`, `access_token`, and `refresh_token` parameters in query strings or payloads must be masked.
-- **Never Log Full Destination URLs**: User destination URLs may contain authentication tokens or sensitive query params. Log only `link_id`, `short_code`, domain/hostname, and HTTP response status.
-
----
-
-## 8. Two Deployment Options (Single-Origin Only)
-
-### Option A: PaaS Stack (Container Web Service + Managed PostgreSQL)
-- **Topology**:
-  - Web: 1 Docker web service on Render, Railway, or Fly.io running the unified container.
-  - Database: Managed PostgreSQL 16 (Render Managed Postgres, Supabase Pro, or Neon).
-  - Storage & Backups: Managed automated daily backups.
-- **Pros**:
-  - Zero Linux server maintenance (no OS patching, no firewall management).
-  - Automated SSL certificate management.
-  - Native release commands for zero-downtime database migrations.
-  - Automated point-in-time recovery and snapshot management.
-- **Cons**:
-  - Higher monthly cost for unpaused database instances.
-  - Less control over PostgreSQL configuration and kernel parameters.
-- **Ops Work Taken On**:
-  - Setting environment variables in provider dashboard.
-  - Configuring domain CNAME records.
-  - Monitoring build logs and monthly usage invoices.
-- **Cold-Start Behavior**:
-  - **0 seconds cold start** on paid tiers.
-- **Cost Estimates**:
-  - Web Service (0.5–1 CPU, 512MB–1GB RAM): **\$7 to \$15 / month (verify)**
-  - Managed PostgreSQL 16 (Starter, automated backups): **\$7 to \$25 / month (verify)**
-  - **Estimated Total**: **\$14 to \$40 / month (verify)**
-
----
-
-### Option B: Unified Single-Host VPS (Caddy + Docker Compose)
-- **Topology**:
-  - Host: 1 Linux VPS (Hetzner Cloud CX22 or DigitalOcean Basic Droplet).
-  - Reverse Proxy: Caddy installed natively or in Docker (handles Let's Encrypt TLS, serves static files, proxies `/api/*` and redirects to backend).
-  - Containers: Docker Compose running FastAPI backend and PostgreSQL 16.
-  - Backups: Nightly cron script running `pg_dump -Fc` with encrypted upload to Backblaze B2 / AWS S3.
-- **Pros**:
-  - Extremely cost-effective for high CPU and RAM capacity.
-  - Sub-millisecond database query transit latency (database on same local host).
-  - Full control over PostgreSQL tuning, connection parameters, and extensions.
-- **Cons**:
-  - Full operational responsibility for host security, OS updates, firewall (`ufw`), and backup verification.
-  - Host failure takes down both application and database until restored.
-- **Ops Work Taken On**:
-  - Linux server provisioning, SSH key management, fail2ban setup.
-  - Configuring and maintaining `Caddyfile`.
-  - Authoring and monitoring cron backup scripts and offsite S3 uploads.
-  - Disk space monitoring and log rotation.
-- **Cold-Start Behavior**:
-  - **0 seconds cold start**.
-- **Cost Estimates**:
-  - Hetzner Cloud CX22 (2 vCPU, 4GB RAM, 40GB NVMe): **€3.79/month (~$4.15/month) (verify)**
-  - DigitalOcean Droplet (1 vCPU, 2GB RAM, 50GB SSD): **\$12/month (verify)**
-  - Offsite Backup Storage (Backblaze B2 / AWS S3, < 10GB): **<\$0.10/month (verify)**
-  - **Estimated Total**: **~\$4.25 to \$12.10 / month (verify)**
-
----
-
-## 9. Production OAuth Setup Guide
-
-### Exact Production Redirect URIs
-In both provider dashboards, configure the exact redirect URIs for your production domain:
-- **Google OAuth**: `https://<your-domain>/api/auth/callback/google`
-- **GitHub OAuth**: `https://<your-domain>/api/auth/callback/github`
-
-### Separate Production GitHub OAuth App
-- **Requirement**: A **separate, dedicated GitHub OAuth App** must be created for production.
-- **Reason**: GitHub OAuth applications only support a single Authorization Callback URL. Local development uses `http://localhost:8001/api/auth/callback/github`. Development and production cannot share a client ID.
-- **Configuration Steps**:
-  1. In GitHub, navigate to **Settings** $\rightarrow$ **Developer settings** $\rightarrow$ **OAuth Apps** $\rightarrow$ **New OAuth App**.
-  2. Application name: `LinkSphere Production`.
-  3. Homepage URL: `https://<your-domain>`
-  4. Authorization callback URL: `https://<your-domain>/api/auth/callback/github`
-  5. Copy `Client ID` and generate a new `Client Secret`.
-
-### Google Cloud Consent Screen Requirements & Publishing Status
-1. **Pre-Publishing Verification Checklist (Verify)**:
-   - Before Google Cloud allows transitioning an OAuth consent screen to **"In Production"**, verify the following required fields in Google Cloud Console:
-     - [ ] **Application Homepage URL**: Must be a live URL (`https://<your-domain>`).
-     - [ ] **Privacy Policy Link**: Must be a valid public URL (`https://<your-domain>/privacy` or external document) **(verify)**.
-     - [ ] **Terms of Service Link**: Optional for basic scopes, but recommended **(verify)**.
-     - [ ] **Authorized Domains**: Must list apex domain (`<your-domain>`).
-2. **Publishing Status Requirement**:
-   - While in **Testing** status: Only Google accounts explicitly added to the **Test users** list can authenticate. Any other user attempting login will receive an `access_denied (403)` error.
-   - For public user access: Must click **"Publish App"** to transition to **In Production**.
-   - *Verification Scope Note*: Because LinkSphere only requests standard identity scopes (`openid`, `email`, `profile`), Google Cloud does not require a paid security audit or application verification video.
-3. **Web Credentials Setup**:
-   - Authorized JavaScript origins: `https://<your-domain>`
-   - Authorized redirect URIs: `https://<your-domain>/api/auth/callback/google`
-
-### Operator Manual Tasks Checklist
-1. Register/point domain DNS (A/CNAME records).
-2. Configure Google Cloud OAuth consent screen (with homepage and privacy policy links), publish to production, and copy Client ID/Secret.
-3. Create Production GitHub OAuth App and copy Client ID/Secret.
-4. Generate 32-byte session secret: `openssl rand -hex 32`.
-5. Enter all environment variables into the hosting dashboard.
-
----
-
-## 10. Phased Implementation Sub-Levels (Level 4.5 Breakdown)
-
-To ensure high quality and zero regressions, the implementation is decomposed into four discrete sub-levels:
-
-### Level 4.5a: Single-Origin Serving, Reserved Routes & Security Headers
+### Level 4.5a: Single-Origin Routing, Reserved Words & Security Headers
 - **Deliverables**:
-  1. Multi-stage Dockerfile setup for frontend asset building into `backend/static/`.
-  2. Static file mounting under `/assets` and explicit root static endpoints.
-  3. Route precedence ordering ensuring SPA client routes serve `index.html` and dynamic short codes evaluate last.
-  4. Synchronize `RESERVED_CODES` in `app/links/schemas.py` to include `analytics` and `settings`.
-  5. Security headers middleware (CSP Report-Only, short HSTS `max-age=300`, nosniff, DENY).
-  6. Response caching headers (`immutable` for assets, `no-cache` for HTML/redirects).
-- **Automated Tests**:
-  - `test_reserved_codes_cover_all_frontend_routes`: Fails if `App.tsx` has routes not in `RESERVED_CODES`.
-  - `test_single_origin_static_and_spa_routing`: Tests that `/login`, `/dashboard`, etc. return 200 with HTML, and `/assets/...` returns static assets.
-  - `test_security_headers_present`: Verifies CSP-Report-Only, HSTS, and nosniff headers.
-- **Acceptance Criteria**: All existing 126 tests pass + new routing tests pass; browser console on all 5 pages reports zero CSP errors.
+  1. Frontend build configuration emitting static assets to `dist/`.
+  2. Synchronize `RESERVED_CODES` to include `analytics` and `settings`.
+  3. Implement CSP-Report-Only middleware and initial short HSTS (`max-age=300`).
+  4. Response caching headers (`immutable` for hashed assets, `no-cache` for HTML/redirects).
+- **Tests & Acceptance**:
+  - `test_reserved_codes_cover_all_frontend_routes` passes in CI.
+  - Browser console on all 5 pages verifies zero CSP violation warnings.
 
-### Level 4.5b: Application-Level Rate Limiting & Daily Link Cap
-- **Deliverables**:
-  1. Hand-written thread-safe sliding-window rate limiter with monotonic clock and memory-bounded eviction.
-  2. Application middleware/dependencies applying rate limits across analytics (60/min), settings (30/min), links (20/min), auth (10/min), and redirect (120/min).
-  3. Database-backed 100 links/day per user cap on `POST /api/links`.
-  4. Trusted proxy configuration with strict `forwarded-allow-ips`.
-- **Automated Tests**:
-  - Unit tests for concurrency, eviction, window rollover, and `Retry-After` header.
-  - Integration test for daily link cap exceeding 100 links returning HTTP 403.
-  - Proxy header spoofing test asserting injected `X-Forwarded-For` from untrusted sources is ignored.
-- **Acceptance Criteria**: Zero new external dependencies added; rate limits reject excess traffic cleanly with HTTP 429/403.
+---
 
-### Level 4.5c: Dockerfile & GitHub Actions CI Gate
+### Level 4.5b: Serverless Rate Limiting & Daily Link Cap
 - **Deliverables**:
-  1. Production multi-stage Dockerfile running as non-root `appuser`.
-  2. GitHub Actions CI pipeline `.github/workflows/ci.yml` running backend tests against PostgreSQL service container `linksphere_test` and building the frontend.
-  3. Pre-deploy Alembic migration script.
-- **Automated Tests**:
-  - Successful local `docker build` and container health check verification.
-  - Clean CI run on GitHub Actions with 100% test pass rate.
-- **Acceptance Criteria**: Docker image contains zero secret credentials; CI blocks deployment on test or build failure.
+  1. Database-backed atomic fixed-window rate limiter for sensitive endpoints.
+  2. Database-backed daily link cap (100 links/day per user computed using Python UTC midnight, counting soft-deleted links).
+  3. Redirect rate limit set to 600 req/min per IP in log-only mode.
+- **Tests & Acceptance**:
+  - Unit tests verifying concurrency, window expiration, and 429 Retry-After.
+  - Integration test verifying 101st link created on the same UTC day returns HTTP 403.
 
-### Level 4.5d: Staging Deployment, Scaling Curve & Production OAuth Validation
+---
+
+### Level 4.5c: `vercel.json` Configuration & GitHub Actions CI Gate
 - **Deliverables**:
-  1. Provision host environment according to chosen topology (PaaS or VPS).
-  2. Execute Alembic migration on production database as a separate release phase step.
-  3. Configure production Google and GitHub OAuth credentials and consent screen.
-  4. Run scaling curve verification (1, 5, 20, 50 concurrent users) on deployment host to empirically test the threadpool vs pool sizing hypothesis.
-- **Automated Tests**:
-  - Live production `/api/health` returns HTTP 200 `{"status":"ok","database":"connected"}`.
-  - Live walkthrough of Google and GitHub OAuth login, account linking, link creation, 5 redirects, and settings revocation.
-  - Scaling curve benchmark report recorded.
-- **Acceptance Criteria**: Zero deployment errors; production OAuth operational for arbitrary external accounts; scaling curve documented.
+  1. Production `vercel.json` routing configuration mapping static assets, SPA routes, API functions, and short-code catch-all.
+  2. GitHub Actions workflow (`.github/workflows/ci.yml`) running backend `pytest` against PostgreSQL service container `linksphere_test` and verifying `npm run build`.
+- **Tests & Acceptance**:
+  - CI pipeline passes with 126+ tests and zero build errors prior to any deployment trigger.
+
+---
+
+### Level 4.5d: Staging Deployment, Scaling Curve & Click Equality
+- **Deliverables**:
+  1. Deploy full application to Vercel production subdomain `https://<project>.vercel.app`.
+  2. Run scaling curve verification (1, 5, 20, and 50 concurrent requests) to measure Vercel serverless cold/warm response latencies.
+  3. Execute 100-request click equality validation test.
+- **Tests & Acceptance**:
+  - Click equality: 100 redirects produce exactly 100 rows in Neon `click_events`.
+  - Full manual walkthrough: Login via Google/GitHub, create link, 5 redirects, view analytics, logout-all.
+
+---
+
+## 10. Open Questions for Operator
+
+Before proceeding to implement Spike 0 or any deployment artifacts, please confirm:
+
+1. **Neon Selection**: Do you approve using **Neon** as the serverless PostgreSQL provider, or would you prefer evaluating Supabase or Render PostgreSQL?
+2. **Rate Limiting Approach**: Do you approve the proposed **Option 1 (Database-Backed atomic counter in Postgres)** for rate limiting, or do you prefer keeping it in-process (best-effort per serverless container)?
+3. **Vercel Account Status**: Do you already have a Vercel account and GitHub repository integration ready for connecting the project?

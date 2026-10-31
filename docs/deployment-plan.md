@@ -150,9 +150,14 @@ Serverless function execution latency is heavily dominated by network transit ti
 - Azure `eastus2` (Virginia, USA)
 
 ### Recommended Pairing Pairs:
-- **US East (Default)**: Vercel `iad1` + Neon AWS `us-east-1` (N. Virginia). Sub-millisecond direct VPC transit latency.
+- **US East (Default & Recommended)**: Vercel `iad1` + Neon AWS `us-east-1` (N. Virginia). Sub-millisecond direct AWS VPC transit latency.
 - **India**: Vercel `bom1` + Neon AWS `ap-south-1` (Mumbai).
 - **Europe**: Vercel `fra1` + Neon AWS `eu-central-1` (Frankfurt).
+
+### Vercel Function Region Configuration & Hobby Tier Constraints
+- **Explicit Pinning in `vercel.json`**: To prevent regional drift or fallback to an unintended data center, `vercel.json` must explicitly specify `"regions": ["iad1"]`. Alternatively, this is locked in Vercel Project Settings $\rightarrow$ Functions $\rightarrow$ Function Region.
+- **Single-Region Hobby Limitation `(verify)`**: On the Vercel Hobby (Free) plan, serverless functions can only be deployed to a **single region** per project. Multi-region automated failover and edge function replication are features restricted to paid tiers. Consequently, all backend API calls and redirect lookups will execute exclusively within `iad1`.
+
 
 ---
 
@@ -164,6 +169,7 @@ In Vercel, `routes` in `vercel.json` are evaluated sequentially. Static assets a
 ```json
 {
   "version": 2,
+  "regions": ["iad1"],
   "builds": [
     {
       "src": "frontend/package.json",

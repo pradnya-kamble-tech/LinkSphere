@@ -32,7 +32,13 @@
   </div>
 
   <div class="card">
-    <h3>3. Click Event Counters</h3>
+    <h3>3. Client IP & Header Inspection</h3>
+    <button onclick="checkIp()">Inspect IP Headers (/api/spike/ip)</button>
+    <pre id="ip-result">Click to inspect headers...</pre>
+  </div>
+
+  <div class="card">
+    <h3>4. Click Event Counters</h3>
     <button onclick="checkCount()">Check Counts (/api/spike/count)</button>
     <pre id="count-result">Click to check counts...</pre>
   </div>
@@ -54,6 +60,12 @@
       const res = await fetch('/api/spike/cookie-read');
       const data = await res.json();
       document.getElementById('cookie-result').textContent = 'Cookie Read: ' + JSON.stringify(data, null, 2);
+    }
+
+    async function checkIp() {
+      const res = await fetch('/api/spike/ip');
+      const data = await res.json();
+      document.getElementById('ip-result').textContent = JSON.stringify(data, null, 2);
     }
 
     async function checkCount() {

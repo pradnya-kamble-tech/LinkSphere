@@ -83,9 +83,8 @@ def sync_redirect(code: str):
         )
     return RedirectResponse("https://example.com", status_code=status.HTTP_302_FOUND)
 
-
 # -----------------------------------------------------------------------------
-# 4. Click Event Counter
+# 5. Click Event Counter
 # -----------------------------------------------------------------------------
 @app.get("/api/spike/count")
 def spike_count() -> Dict[str, int]:
@@ -101,11 +100,10 @@ def spike_count() -> Dict[str, int]:
     return counts
 
 # -----------------------------------------------------------------------------
-# 5. Same-Origin Cookie Verification
+# 6. Same-Origin Cookie Verification
 # -----------------------------------------------------------------------------
 @app.get("/api/spike/cookie-set")
 def spike_cookie_set(response: Response):
-    # Cookie is HttpOnly, SameSite=Lax, Secure (in production/https)
     is_secure = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
     response.set_cookie(
         key="spike_session",
@@ -125,3 +123,20 @@ def spike_cookie_read(request: Request):
         "cookie_value": val if val else None,
     }
 
+# -----------------------------------------------------------------------------
+# 7. Client IP & Forwarded Header Inspection
+# -----------------------------------------------------------------------------
+@app.get("/api/spike/ip")
+def spike_ip(request: Request):
+    """Inspect client IP resolution and proxy headers to test for header spoofing."""
+    return {
+        "client_host": request.client.host if request.client else None,
+        "x_forwarded_for": request.headers.get("x-forwarded-for"),
+        "x_real_ip": request.headers.get("x-real-ip"),
+        "x_vercel_forwarded_for": request.headers.get("x-vercel-forwarded-for"),
+        "x_vercel_ip": request.headers.get("x-vercel-ip"),
+        "all_ip_headers": {
+            k: v for k, v in request.headers.items()
+            if "forwarded" in k.lower() or "ip" in k.lower() or "real" in k.lower()
+        },
+    }

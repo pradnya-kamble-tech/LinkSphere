@@ -124,6 +124,22 @@ Remove-Item cookie.txt
 
 ---
 
+### Test F: Client IP & Proxy Header Spoofing Inspection
+Verify how Vercel resolves client IPs and test whether client IP can be spoofed by injecting custom headers:
+```powershell
+# 1. Normal request: inspect headers assigned by Vercel edge
+curl.exe -s "https://<project>.vercel.app/api/spike/ip"
+
+# 2. Spoofed request: inject fake X-Forwarded-For to test edge behavior
+curl.exe -s -H "X-Forwarded-For: 1.2.3.4" "https://<project>.vercel.app/api/spike/ip"
+```
+*Verification*:
+- Observe whether Vercel preserves `1.2.3.4` at the left of `x_forwarded_for`, or if `x_real_ip` strictly retains the real client IP.
+- If `x_real_ip` retains the true connecting IP, `x_real_ip` is safe for rate limiting.
+- If `1.2.3.4` is accepted as client host, per-IP rate limiting is spoofable.
+
+---
+
 ## 3. Results Recording Template
 
 Record your live test measurements below:
@@ -135,4 +151,5 @@ Record your live test measurements below:
 | **Background 100 Redirects Count** | **VERIFIED (100 / 100 on local)** | *(Fill: bg count)* | **CRITICAL**: If < 100, proves Lambda freeze |
 | **Neon Autosuspend Wake Time** | **NOT APPLICABLE (Local)** | *(Fill: seconds to wake)* | Measured after 10m idle |
 | **Same-Origin Cookie Read/Write** | **VERIFIED (Local)** | *(Fill: OK / Blocked)* | Must return `cookie_found: true` |
+| **Client IP Resolution (`/api/spike/ip`)** | **VERIFIED (Local)** | *(Fill: Header values)* | Verify if `x-real-ip` prevents spoofing |
 | **Deployment Protection Status** | **NOT APPLICABLE (Local)** | *(Fill: Disabled / Bypassed)* | Must allow public 302 redirects |

@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/assets/:path*",
+      "destination": "/static/assets/:path*"
+    },
+    {
+      "source": "/favicon.ico",
+      "destination": "/static/favicon.ico"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/bg/:code",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/login",
+      "destination": "/static/index.html"
+    },
+    {
+      "source": "/",
+      "destination": "/static/index.html"
+    },
+    {
+      "source": "/:code",
+      "destination": "/api/index.py"
+    }
+  ]
+}

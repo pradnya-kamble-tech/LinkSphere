@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LinkSphere Spike 0 - Single-Origin Test</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; line-height: 1.5; color: #222; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { color: #555; }
+    .card { background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    button { background: #0070f3; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 0.9rem; margin-right: 8px; margin-bottom: 8px; }
+    button:hover { background: #0051bb; }
+    pre { background: #eee; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <h1>LinkSphere Spike 0</h1>
+  <p>Proving single-origin routing, database connection pooler, and cookie persistence.</p>
+
+  <div class="card">
+    <h3>1. Database Ping</h3>
+    <button onclick="pingDb()">Ping DB (/api/spike/db)</button>
+    <pre id="db-result">Click to test...</pre>
+  </div>
+
+  <div class="card">
+    <h3>2. Same-Origin Cookie Verification</h3>
+    <button onclick="setCookie()">Set Cookie (/api/spike/cookie-set)</button>
+    <button onclick="readCookie()">Read Cookie (/api/spike/cookie-read)</button>
+    <pre id="cookie-result">Click buttons above to test cookie flow...</pre>
+  </div>
+
+  <div class="card">
+    <h3>3. Click Event Counters</h3>
+    <button onclick="checkCount()">Check Counts (/api/spike/count)</button>
+    <pre id="count-result">Click to check counts...</pre>
+  </div>
+
+  <script>
+    async function pingDb() {
+      const res = await fetch('/api/spike/db');
+      const data = await res.json();
+      document.getElementById('db-result').textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function setCookie() {
+      const res = await fetch('/api/spike/cookie-set');
+      const data = await res.json();
+      document.getElementById('cookie-result').textContent = 'Cookie Set: ' + JSON.stringify(data, null, 2);
+    }
+
+    async function readCookie() {
+      const res = await fetch('/api/spike/cookie-read');
+      const data = await res.json();
+      document.getElementById('cookie-result').textContent = 'Cookie Read: ' + JSON.stringify(data, null, 2);
+    }
+
+    async function checkCount() {
+      const res = await fetch('/api/spike/count');
+      const data = await res.json();
+      document.getElementById('count-result').textContent = JSON.stringify(data, null, 2);
+    }
+  </script>
+</body>
+</html>

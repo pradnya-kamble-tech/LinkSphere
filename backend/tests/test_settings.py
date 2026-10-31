@@ -184,41 +184,57 @@ async def test_get_my_sessions_and_current_marker(async_client: httpx.AsyncClien
 # =========================================================================
 
 @pytest.mark.anyio
-async def test_revoke_other_session(async_client: httpx.AsyncClient, auth_user, second_user, db):
+async def test_revoke_malformed_uuid_returns_422(async_client: httpx.AsyncClient, auth_user):
+    user, token, _ = auth_user
+    async_client.cookies.set("session_token", token)
+
+    resp = await async_client.delete(
+        "/api/me/sessions/not-a-valid-uuid",
+        headers={"Origin": settings.FRONTEND_ORIGIN},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_revoke_unknown_session_id_returns_404(async_client: httpx.AsyncClient, auth_user):
+    user, token, _ = auth_user
+    async_client.cookies.set("session_token", token)
+
+    resp = await async_client.delete(
+        f"/api/me/sessions/{uuid.uuid4()}",
+        headers={"Origin": settings.FRONTEND_ORIGIN},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_revoke_other_user_session_returns_404(async_client: httpx.AsyncClient, auth_user, second_user, db):
+    user, token, _ = auth_user
+    async_client.cookies.set("session_token", token)
+
+    # User B's session
+    _, _, session_b = second_user
+
+    # IDOR attempt: try to delete User B's session -> 404
+    resp = await async_client.delete(
+        f"/api/me/sessions/{session_b.id}",
+        headers={"Origin": settings.FRONTEND_ORIGIN},
+    )
+    assert resp.status_code == 404
+    # User B's session remains unrevoked
+    db.refresh(session_b)
+    assert session_b.revoked_at is None
+
+
+@pytest.mark.anyio
+async def test_revoke_own_secondary_session(async_client: httpx.AsyncClient, auth_user, db):
     user, token1, session1 = auth_user
     async_client.cookies.set("session_token", token1)
 
     # Create session 2 for user A
     token2, session2 = create_user_session(db, user.id)
 
-    # User B's session
-    _, _, session_b = second_user
-
-    # 1. Malformed UUID -> 422
-    resp_malformed = await async_client.delete(
-        "/api/me/sessions/not-a-valid-uuid",
-        headers={"Origin": settings.FRONTEND_ORIGIN},
-    )
-    assert resp_malformed.status_code == 422
-
-    # 2. Non-existent UUID -> 404
-    resp_404 = await async_client.delete(
-        f"/api/me/sessions/{uuid.uuid4()}",
-        headers={"Origin": settings.FRONTEND_ORIGIN},
-    )
-    assert resp_404.status_code == 404
-
-    # 3. IDOR attempt: try to delete User B's session -> 404
-    resp_idor = await async_client.delete(
-        f"/api/me/sessions/{session_b.id}",
-        headers={"Origin": settings.FRONTEND_ORIGIN},
-    )
-    assert resp_idor.status_code == 404
-    # User B's session remains unrevoked
-    db.refresh(session_b)
-    assert session_b.revoked_at is None
-
-    # 4. Revoke user A's second session -> 200 OK
+    # Revoke user A's second session -> 200 OK
     resp_ok = await async_client.delete(
         f"/api/me/sessions/{session2.id}",
         headers={"Origin": settings.FRONTEND_ORIGIN},
@@ -361,7 +377,7 @@ def test_is_session_active_helper():
     # 5. None session
     assert is_session_active(None, now=now) is False
 
-    # 6. Session with no last_seen_at (freshly created before first access)
+    # 6. Session with no last_seen_at (freshly created before first access, created_at is fresh)
     sess_no_seen = Session(
         user_id=uuid.uuid4(),
         token_hash="hash",
@@ -371,4 +387,16 @@ def test_is_session_active_helper():
         revoked_at=None,
     )
     assert is_session_active(sess_no_seen, now=now) is True
+
+    # 7. Session with NULL last_seen_at where created_at is past idle timeout -> False
+    sess_null_seen_old = Session(
+        user_id=uuid.uuid4(),
+        token_hash="hash",
+        created_at=now - timedelta(hours=settings.SESSION_IDLE_TIMEOUT_HOURS + 2),
+        expires_at=now + timedelta(days=30),
+        last_seen_at=None,
+        revoked_at=None,
+    )
+    assert is_session_active(sess_null_seen_old, now=now) is False
+
 

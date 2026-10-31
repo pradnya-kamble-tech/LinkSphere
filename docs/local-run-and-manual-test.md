@@ -18,24 +18,24 @@ cd C:\Users\Shuddhodhan\LinkSphere_v2
 Create `.env` at the root of `LinkSphere_v2/` (or copy `.env.example`).
 > **Security Note:** Never commit `.env` or store real secrets in documentation.
 
-Required environment variable keys (names only):
+Required environment variable keys (names only, matching `app/core/config.py` and `.env.example`):
 * `POSTGRES_DB`
 * `POSTGRES_USER`
 * `POSTGRES_PASSWORD`
 * `POSTGRES_HOST`
 * `POSTGRES_PORT`
-* `DATABASE_URL`
-* `CORS_ORIGINS`
+* `DATABASE_URL` (e.g. `postgresql+psycopg://linksphere_user:linksphere_dev_password@localhost:5434/linksphere_db`)
+* `CORS_ORIGINS` (e.g. `http://localhost:5173,http://localhost:5174`)
+* `FRONTEND_ORIGIN` (`http://localhost:5173`)
+* `ENVIRONMENT` (`local`)
 * `GOOGLE_CLIENT_ID`
 * `GOOGLE_CLIENT_SECRET`
 * `GITHUB_CLIENT_ID`
 * `GITHUB_CLIENT_SECRET`
 * `SESSION_SECRET`
-* `FRONTEND_ORIGIN`
-* `ENVIRONMENT`
-* `SESSION_LIFETIME_DAYS`
-* `SESSION_IDLE_TIMEOUT_HOURS`
-* `SHORT_LINK_BASE_URL`
+* `SESSION_LIFETIME_DAYS` (`7`)
+* `SESSION_IDLE_TIMEOUT_HOURS` (`24`)
+* `SHORT_LINK_BASE_URL` (`http://localhost:8001`)
 * `DB_POOL_SIZE`
 * `DB_MAX_OVERFLOW`
 * `DB_POOL_TIMEOUT`
@@ -45,10 +45,11 @@ Required environment variable keys (names only):
 ## 2. Infrastructure & Database Initialization
 
 ### Step 3: Start PostgreSQL 16 via Docker Compose
-Start the dedicated database container in the background:
+Start the dedicated database container in the background using service `db` defined in `docker-compose.yml`:
 ```powershell
 docker compose up -d db
 ```
+* **Service Name in `docker-compose.yml`:** `db`
 * **Container Name:** `linksphere-v2-db`
 * **Exposed Port:** `5434` (mapped to PostgreSQL internal `5432` to avoid host conflicts)
 * **Verification Command:**
@@ -78,22 +79,27 @@ In a separate terminal or background process:
 ```powershell
 cd C:\Users\Shuddhodhan\LinkSphere_v2\backend
 $env:ENVIRONMENT = "local"
-.\.venv\Scripts\uvicorn.exe app.main:app --host 127.0.0.1 --port 8000 --reload
+.\.venv\Scripts\uvicorn.exe app.main:app --host localhost --port 8001
 ```
-* **Backend URL:** `http://127.0.0.1:8000`
-* **Health Check Verification:**
+* **Backend URL:** `http://localhost:8001`
+* **Health Check Verification (Direct):**
   ```powershell
-  curl http://127.0.0.1:8000/api/health
-  # Expected response: {"status":"ok","db":true}
+  curl.exe -i http://localhost:8001/api/health
+  # Expected response: HTTP/1.1 200 OK {"status":"ok","database":"connected"}
   ```
 
 ### Step 6: Start React / Vite Frontend
 In a separate terminal:
 ```powershell
 cd C:\Users\Shuddhodhan\LinkSphere_v2\frontend
-npm run dev -- --host 127.0.0.1 --port 5173
+npm run dev
 ```
 * **Frontend URL:** `http://localhost:5173`
+* **Proxy Health Check Verification (via Vite proxy `/api` -> `http://localhost:8001`):**
+  ```powershell
+  curl.exe -i http://localhost:5173/api/health
+  # Expected response: HTTP/1.1 200 OK {"status":"ok","database":"connected"}
+  ```
 * **Frontend Build Check:**
   ```powershell
   npm run build
@@ -113,7 +119,7 @@ docker exec -it linksphere-v2-db psql -U linksphere_user -d linksphere_db
 1. In the browser, navigate to `http://localhost:5173/login`.
 2. Click **Continue with Google**.
    * *Status:* **NOT VERIFIED (Requires Real OAuth Credentials)**
-3. Upon returning from Google, you are redirected to `/dashboard`.
+3. Upon returning from Google, you are redirected to `http://localhost:5173/dashboard`.
 4. **SQL Verification:**
    ```sql
    SELECT id, email, name FROM users;
@@ -138,10 +144,10 @@ docker exec -it linksphere-v2-db psql -U linksphere_user -d linksphere_db
    ```
 
 ### Scenario C: GitHub Sign-In Account Linking
-1. While logged out, click **Continue with GitHub** on `/login` using the same email address as Google.
+1. While logged out, click **Continue with GitHub** on `http://localhost:5173/login` using the same email address as Google.
    * *Status:* **NOT VERIFIED (Requires Real OAuth Credentials)**
-2. Upon authentication, you are redirected to `/dashboard`.
-3. Navigate to `/settings`.
+2. Upon authentication, you are redirected to `http://localhost:5173/dashboard`.
+3. Navigate to `http://localhost:5173/settings`.
 4. **UI Check:** Under "Connected Accounts", both Google and GitHub appear as connected.
 5. **SQL Verification:**
    ```sql
@@ -153,7 +159,7 @@ docker exec -it linksphere-v2-db psql -U linksphere_user -d linksphere_db
    ```
 
 ### Scenario D: Link Creation
-1. On `/dashboard`, enter a target URL (e.g., `https://example.com/docs`) and click **Create Link**.
+1. On `http://localhost:5173/dashboard`, enter a target URL (e.g., `https://example.com/docs`) and click **Create Link**.
 2. Note the generated short code (e.g. `k8s9x2`).
 3. **SQL Verification:**
    ```sql
@@ -162,10 +168,10 @@ docker exec -it linksphere-v2-db psql -U linksphere_user -d linksphere_db
    ```
 
 ### Scenario E: 5 Short URL Redirects
-1. Using PowerShell or a browser, issue 5 requests to the redirect URL:
+1. Using PowerShell, issue 5 requests to the redirect URL on port 8001:
    ```powershell
    1..5 | ForEach-Object {
-       curl.exe -s -o /dev/null -w "%{http_code}`n" http://127.0.0.1:8000/k8s9x2
+       curl.exe -s -o NUL -w "%{http_code}`n" http://localhost:8001/k8s9x2
    }
    # Expected: Five 302 HTTP status codes
    ```
@@ -205,9 +211,9 @@ docker exec -it linksphere-v2-db psql -U linksphere_user -d linksphere_db
 1. In the primary browser, log in again and navigate to `/dashboard`.
 2. Click **Delete** on the link `k8s9x2`.
 3. Confirm link is removed from the dashboard links list.
-4. Attempt visiting `http://127.0.0.1:8000/k8s9x2` in browser or curl:
+4. Attempt visiting `http://localhost:8001/k8s9x2` in browser or curl.exe:
    ```powershell
-   curl.exe -i http://127.0.0.1:8000/k8s9x2
+   curl.exe -i http://localhost:8001/k8s9x2
    # Expected: HTTP/1.1 404 Not Found (custom 404 HTML response)
    ```
 5. **SQL Verification:**
@@ -224,6 +230,8 @@ docker exec -it linksphere-v2-db psql -U linksphere_user -d linksphere_db
 | :--- | :--- | :--- |
 | **PostgreSQL Database** | `docker ps --filter "name=linksphere-v2-db"` | VERIFIED (`Up (healthy)`) |
 | **Alembic Schema** | `.\.venv\Scripts\alembic.exe current` | VERIFIED (`0002_add_deleted_at_to_links`) |
-| **Backend Test Suite** | `.\.venv\Scripts\pytest.exe` | VERIFIED (123 passed, 1 warning) |
+| **Backend Health (Direct)** | `curl.exe -i http://localhost:8001/api/health` | VERIFIED (`HTTP/1.1 200 OK`) |
+| **Frontend Health (Vite Proxy)** | `curl.exe -i http://localhost:5173/api/health` | VERIFIED (`HTTP/1.1 200 OK`) |
+| **Backend Test Suite** | `.\.venv\Scripts\pytest.exe` | VERIFIED (126 passed, 1 warning) |
 | **Frontend Production Build** | `npm run build` | VERIFIED (48 modules transformed, 0 errors) |
 | **OAuth Third-Party Providers** | Google / GitHub interactive sign-in | NOT VERIFIED (Requires Real OAuth Credentials) |

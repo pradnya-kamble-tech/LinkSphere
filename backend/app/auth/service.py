@@ -140,8 +140,9 @@ def is_session_active(session: Session, now: Optional[datetime] = None) -> bool:
     if session.expires_at <= current_time:
         return False
 
-    if session.last_seen_at and (
-        current_time - session.last_seen_at > timedelta(hours=settings.SESSION_IDLE_TIMEOUT_HOURS)
+    effective_last_seen = session.last_seen_at or session.created_at
+    if effective_last_seen and (
+        current_time - effective_last_seen > timedelta(hours=settings.SESSION_IDLE_TIMEOUT_HOURS)
     ):
         return False
 

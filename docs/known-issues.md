@@ -55,6 +55,10 @@
 * **Requirement**: Level 7 settings and session management endpoints (`/api/me/identities`, `/api/me/sessions`, `/api/auth/logout-all`, `DELETE /api/me/sessions/{id}`) should enforce a rate limit of 30 requests/minute per user at the API gateway / proxy layer.
 * **Architecture Decision**: Recorded as an architectural requirement for Level 4.5 gateway configuration to prevent abuse of session listing and mass revocation endpoints.
 
+### Issue 11: Level 7 Sessions List Tail Latency Under Concurrency
+* **Observation**: Level 7 sessions-list p50 1.8 s and p95 5.2 s at 50 users on a trivial query; same unexplained pattern; re-measure on the deployment host with a 1, 5, 20, 50 user scaling curve.
+
+
 ---
 
 ## 2. Phase 3 Performance Regression Baseline

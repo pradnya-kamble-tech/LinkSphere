@@ -304,3 +304,71 @@ async def test_logout_all_revokes_all_user_sessions_and_leaves_others(async_clie
     resp_b = await async_client.get("/api/me")
     assert resp_b.status_code == 200
     assert resp_b.json()["id"] == str(user_b.id)
+
+
+# =========================================================================
+# 6. SHARED HELPER UNIT TESTS (is_session_active)
+# =========================================================================
+
+def test_is_session_active_helper():
+    from app.auth.service import is_session_active
+    now = datetime(2026, 10, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Active session
+    sess = Session(
+        user_id=uuid.uuid4(),
+        token_hash="hash",
+        created_at=now - timedelta(days=1),
+        expires_at=now + timedelta(days=29),
+        last_seen_at=now - timedelta(hours=1),
+        revoked_at=None,
+    )
+    assert is_session_active(sess, now=now) is True
+
+    # 2. Revoked session
+    sess_revoked = Session(
+        user_id=uuid.uuid4(),
+        token_hash="hash",
+        created_at=now - timedelta(days=1),
+        expires_at=now + timedelta(days=29),
+        last_seen_at=now - timedelta(hours=1),
+        revoked_at=now - timedelta(minutes=10),
+    )
+    assert is_session_active(sess_revoked, now=now) is False
+
+    # 3. Expired session
+    sess_expired = Session(
+        user_id=uuid.uuid4(),
+        token_hash="hash",
+        created_at=now - timedelta(days=35),
+        expires_at=now - timedelta(days=5),
+        last_seen_at=now - timedelta(days=5),
+        revoked_at=None,
+    )
+    assert is_session_active(sess_expired, now=now) is False
+
+    # 4. Idle expired session (> SESSION_IDLE_TIMEOUT_HOURS)
+    sess_idle = Session(
+        user_id=uuid.uuid4(),
+        token_hash="hash",
+        created_at=now - timedelta(days=5),
+        expires_at=now + timedelta(days=25),
+        last_seen_at=now - timedelta(hours=settings.SESSION_IDLE_TIMEOUT_HOURS + 1),
+        revoked_at=None,
+    )
+    assert is_session_active(sess_idle, now=now) is False
+
+    # 5. None session
+    assert is_session_active(None, now=now) is False
+
+    # 6. Session with no last_seen_at (freshly created before first access)
+    sess_no_seen = Session(
+        user_id=uuid.uuid4(),
+        token_hash="hash",
+        created_at=now,
+        expires_at=now + timedelta(days=30),
+        last_seen_at=None,
+        revoked_at=None,
+    )
+    assert is_session_active(sess_no_seen, now=now) is True
+

@@ -34,3 +34,10 @@ Typical User: 20 links, 2,000 clicks.
    * Measured p95 of ~4.5–7.2 s for typical users under 50 simultaneous connections remained > 1 s even after manual `ANALYZE` and confirming idle PostgreSQL autovacuum processes. Root cause unknown; consistent with queueing but not proven. Re-measure on the deployment host with a scaling curve at 1, 5, 20 and 50 concurrent users to see whether the server saturates or serializes. This is not a capacity statement.
 4. **Timezone Bucketing Choice**:
    * Python-computed CASE bucketing is 22.8% faster than `AT TIME ZONE` for typical users (30.8 vs 39.9 ms), but 131.7% slower for 1,000-link users (304.3 vs 131.3 ms). CASE bucketing is retained for safety against invalid IANA timezone 500s.
+
+---
+
+## 3. Test Suite & Validation Notes
+
+* **Huge Link ID Test**: A standalone test function named `test_huge_link_id_returns_422_not_500` does not exist. The test check verifying that an out-of-range link_id (`9999999999999999999`, exceeding PostgreSQL 64-bit integer max) returns HTTP 422 (never 500) and that a valid maximum int64 link_id (`9223372036854775807`) returns HTTP 404 (not 422 or 500) lives inside `test_analytics_invalid_inputs_and_adversarial` in `backend/tests/test_analytics.py`.
+
